@@ -25,7 +25,7 @@ python-multipart>=0.0.6
 
 # JSON & YAML Processing
 pyyaml>=6.0.1
-rapidjson>=1.14
+python-rapidjson>=1.14
 
 # Git Operations
 gitpython>=3.1.40
