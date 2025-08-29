@@ -1,4 +1,4 @@
-# DeepLoyd ComfyUI Dockerizer
+# DeepLoyd Comfy
 
 Transform ComfyUI workflows into production-ready Docker containers with automatic API generation and documentation.
 
