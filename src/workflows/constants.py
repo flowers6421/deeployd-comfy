@@ -8,6 +8,7 @@ BUILTIN_NODES = {
     "LoraLoader",
     "VAELoader",
     "CLIPLoader",
+    "UNETLoader",
     "ControlNetLoader",
     "DiffusersLoader",
     "unCLIPCheckpointLoader",
@@ -104,6 +105,8 @@ BUILTIN_NODES = {
     "PrimitiveNode",
     "Reroute",
     "Note",
+    # Input/UI
+    "TextInput_",
     # Utility
     "LoraLoaderModelOnly",
     "HypernetworkLoader",

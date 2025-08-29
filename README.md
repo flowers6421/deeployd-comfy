@@ -9,10 +9,11 @@ Takes ComfyUI workflows → Makes Docker containers → Generates APIs
 ## Features
 
 - Parse ComfyUI workflows (UI and API formats)
-- Extract all dependencies automatically
-- Generate optimized Dockerfiles
-- Create REST APIs from workflows
-- 90% test coverage
+- Extract all dependencies automatically (models, custom nodes, Python packages)
+- Generate optimized Dockerfiles with GPU support
+- Create REST API configurations from workflows
+- 90% test coverage (253 tests passing)
+- Successfully tested with production workflows
 
 ## Quick Start
 
@@ -54,8 +55,26 @@ pytest --cov=src  # With coverage
 
 The tool generates:
 - `build/Dockerfile` - Optimized Docker configuration
-- `build/api_config.json` - API endpoint configuration
-- Docker image (if `--build-image` flag used)
+- `build/api_config.json` - API endpoint configuration with extracted parameters
+- Docker image with ComfyUI and all dependencies installed
+
+## Running the Container
+
+```bash
+# Build container from workflow
+python main.py build-workflow tests/real_workflow.json --image-name comfyui-workflow --tag latest
+
+# Run with shared model volume
+docker run -d --name comfyui \
+  -p 8188:8188 \
+  -v /path/to/models:/app/ComfyUI/models \
+  comfyui-workflow:latest
+
+# Submit workflow via API
+curl -X POST http://localhost:8188/prompt \
+  -H "Content-Type: application/json" \
+  -d @workflow.json
+```
 
 ## License
 

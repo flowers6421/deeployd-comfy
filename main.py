@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from src.api.generator import WorkflowAPIGenerator
+from src.containers.custom_node_installer import CustomNodeInstaller
 from src.containers.docker_manager import DockerManager
 from src.containers.dockerfile_builder import DockerfileBuilder
 from src.workflows.analyzer import NodeAnalyzer
@@ -48,6 +49,16 @@ def build_workflow(
         True, help="Build Docker image after generating Dockerfile"
     ),
     push: bool = typer.Option(False, help="Push image to registry after building"),
+    custom_node_repos: str = typer.Option(
+        None, 
+        help="Custom node repositories in format 'NodeName1=repo1,NodeName2=repo2'"
+    ),
+    no_interactive: bool = typer.Option(
+        False, help="Skip interactive prompts for missing custom nodes"
+    ),
+    comprehensive_lookup: bool = typer.Option(
+        True, help="Use comprehensive NODE_CLASS_MAPPINGS analysis (slower but more accurate)"
+    ),
     registry: str | None = typer.Option(None, help="Registry URL for pushing image"),
 ):
     """Build a Docker container from a ComfyUI workflow."""
@@ -128,6 +139,39 @@ def build_workflow(
             progress.update(task, completed=True)
             console.print("[green]✓[/green] Dependencies extracted")
 
+        # Step 5: Resolve custom node repositories
+        custom_node_metadata = []
+        if dependencies.get("custom_nodes"):
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Resolving custom node repositories...", total=None)
+
+                # Parse manual repository mappings
+                manual_repos = {}
+                if custom_node_repos:
+                    for pair in custom_node_repos.split(","):
+                        if "=" in pair:
+                            node_name, repo_url = pair.strip().split("=", 1)
+                            manual_repos[node_name.strip()] = repo_url.strip()
+
+                # Initialize custom node installer with caching
+                cache_dir = output_dir / ".cache"
+                installer = CustomNodeInstaller(cache_dir=str(cache_dir))
+                
+                # Resolve repositories with hybrid approach
+                custom_node_metadata = installer.resolve_custom_node_repositories(
+                    custom_nodes=dependencies["custom_nodes"],
+                    manual_repos=manual_repos,
+                    interactive=not no_interactive,
+                    use_comprehensive_lookup=comprehensive_lookup
+                )
+
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Resolved {len(custom_node_metadata)} custom node repositories")
+
             # Display dependencies table
             table = Table(title="Workflow Dependencies")
             table.add_column("Type", style="cyan")
@@ -178,11 +222,25 @@ def build_workflow(
             # Initialize builder
             dockerfile_builder = DockerfileBuilder()
 
+            # Detect if CUDA is available
+            use_cuda = False
+            try:
+                import subprocess
+                result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+                use_cuda = result.returncode == 0
+                if use_cuda:
+                    console.print("[green]✓ NVIDIA GPU detected - using CUDA[/green]")
+                else:
+                    console.print("[yellow]⚠ No NVIDIA GPU detected - using CPU[/yellow]")
+            except FileNotFoundError:
+                console.print("[yellow]⚠ nvidia-smi not found - using CPU[/yellow]")
+
             # Use the build_for_workflow method which handles everything
             dockerfile_content = dockerfile_builder.build_for_workflow(
                 dependencies=dependencies,
-                base_image="python:3.11-slim",
-                use_cuda=False,  # TODO: detect if CUDA is needed from workflow
+                custom_nodes=custom_node_metadata,
+                base_image="nvidia/cuda:12.8.0-runtime-ubuntu22.04" if use_cuda else "python:3.11-slim",
+                use_cuda=use_cuda,
             )
             dockerfile_path = output_dir / "Dockerfile"
             with open(dockerfile_path, "w") as f:

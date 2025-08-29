@@ -1,11 +1,16 @@
 """Custom node installer for ComfyUI workflows."""
 
 import ast
+import json
 import re
 import subprocess
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+import hashlib
+import time
 
 from packaging import version
 
@@ -49,6 +54,11 @@ class CustomNodeInstaller:
             "sklearn": "scikit-learn",
             "yaml": "pyyaml",
         }
+        self._comfyui_manager_database = None
+        self._node_mapping_cache = {}
+        self._comprehensive_node_mapping = {}
+        self._database_cache_path = self.cache_dir / "comfyui-manager-db.json" if self.cache_dir else None
+        self._node_mapping_cache_path = self.cache_dir / "node-class-mappings.json" if self.cache_dir else None
 
     def extract_custom_nodes(
         self, workflow_nodes: dict[str, Any]
@@ -84,6 +94,445 @@ class CustomNodeInstaller:
                 custom_nodes.append(node_info)
 
         return custom_nodes
+
+    def download_comfyui_manager_database(self) -> dict[str, Any]:
+        """Download ComfyUI-Manager custom node database.
+
+        Returns:
+            Dictionary containing the custom node database
+
+        Raises:
+            NodeInstallationError: If download fails
+        """
+        database_url = "https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/node_db/new/custom-node-list.json"
+        
+        try:
+            with urllib.request.urlopen(database_url, timeout=30) as response:
+                data = json.loads(response.read().decode('utf-8'))
+            
+            # Cache the database if cache directory is available
+            if self._database_cache_path:
+                self._database_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._database_cache_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+            
+            return data
+            
+        except (URLError, json.JSONDecodeError) as e:
+            raise NodeInstallationError(f"Failed to download ComfyUI-Manager database: {e}")
+
+    def load_comfyui_manager_database(self) -> dict[str, Any]:
+        """Load ComfyUI-Manager database from cache or download.
+
+        Returns:
+            Dictionary containing the custom node database
+        """
+        # Check if already loaded
+        if self._comfyui_manager_database is not None:
+            return self._comfyui_manager_database
+        
+        # Try to load from cache first
+        if self._database_cache_path and self._database_cache_path.exists():
+            try:
+                with open(self._database_cache_path, 'r') as f:
+                    self._comfyui_manager_database = json.load(f)
+                return self._comfyui_manager_database
+            except (json.JSONDecodeError, IOError):
+                # Cache corrupted, download fresh
+                pass
+        
+        # Download fresh database
+        self._comfyui_manager_database = self.download_comfyui_manager_database()
+        return self._comfyui_manager_database
+
+    def find_repository_by_class_name(self, class_name: str) -> str | None:
+        """Find repository URL for a custom node class name.
+
+        Args:
+            class_name: The class name of the custom node
+
+        Returns:
+            Repository URL if found, None otherwise
+        """
+        # Check cache first
+        if class_name in self._node_mapping_cache:
+            return self._node_mapping_cache[class_name]
+        
+        try:
+            database = self.load_comfyui_manager_database()
+            
+            for entry in database.get('custom_nodes', []):
+                # Check if this entry contains the class name
+                # Look in various fields that might contain node class information
+                entry_files = entry.get('files', [])
+                entry_reference = entry.get('reference', '')
+                entry_title = entry.get('title', '')
+                
+                # Simple heuristic: match class name with title or reference
+                if (class_name.lower() in entry_title.lower() or 
+                    class_name in entry_title or
+                    class_name.replace('|', '').replace(' ', '') in entry_title.replace(' ', '')):
+                    
+                    # Extract repository URL from reference or files
+                    repo_url = entry_reference
+                    if not repo_url and entry_files:
+                        # Try to extract from first file URL
+                        first_file = entry_files[0]
+                        if 'github.com' in first_file:
+                            # Convert raw GitHub URL to repository URL
+                            if 'raw.githubusercontent.com' in first_file:
+                                # Convert raw URL to repo URL
+                                parts = first_file.split('/')
+                                if len(parts) >= 5:
+                                    user = parts[3]
+                                    repo = parts[4]
+                                    repo_url = f"https://github.com/{user}/{repo}"
+                    
+                    if repo_url and self.validate_repository_url(repo_url):
+                        # Cache the result
+                        self._node_mapping_cache[class_name] = repo_url
+                        return repo_url
+                        
+        except Exception as e:
+            # Fallback silently - we'll use manual input
+            pass
+        
+        return None
+
+    def fetch_github_raw_file(self, repo_url: str, file_path: str) -> str | None:
+        """Fetch raw file content from GitHub repository.
+
+        Args:
+            repo_url: GitHub repository URL
+            file_path: Path to file in repository
+
+        Returns:
+            File content as string, None if not found
+        """
+        try:
+            # Convert repo URL to raw URL
+            if 'github.com' in repo_url:
+                # Extract user/repo from URL
+                parts = repo_url.rstrip('/').split('/')
+                if len(parts) >= 2:
+                    user = parts[-2]
+                    repo = parts[-1].replace('.git', '')
+                    raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
+                    
+                    with urllib.request.urlopen(raw_url, timeout=10) as response:
+                        return response.read().decode('utf-8')
+        except Exception:
+            # Try 'master' branch if 'main' fails
+            try:
+                if 'github.com' in repo_url:
+                    parts = repo_url.rstrip('/').split('/')
+                    if len(parts) >= 2:
+                        user = parts[-2]
+                        repo = parts[-1].replace('.git', '')
+                        raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/master/{file_path}"
+                        
+                        with urllib.request.urlopen(raw_url, timeout=10) as response:
+                            return response.read().decode('utf-8')
+            except Exception:
+                pass
+        
+        return None
+
+    def parse_node_class_mappings(self, python_content: str) -> dict[str, str]:
+        """Parse NODE_CLASS_MAPPINGS from Python file content.
+
+        Args:
+            python_content: Python file content as string
+
+        Returns:
+            Dictionary mapping node class names to repository info
+        """
+        mappings = {}
+        
+        try:
+            tree = ast.parse(python_content)
+            
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    # Look for NODE_CLASS_MAPPINGS assignment
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == 'NODE_CLASS_MAPPINGS':
+                            # Parse the dictionary
+                            if isinstance(node.value, ast.Dict):
+                                for key_node, value_node in zip(node.value.keys, node.value.values):
+                                    if isinstance(key_node, ast.Str):
+                                        # Python < 3.8
+                                        key = key_node.s
+                                    elif isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                                        # Python >= 3.8
+                                        key = key_node.value
+                                    else:
+                                        continue
+                                    
+                                    mappings[key] = key  # Map to itself for now
+                                    
+        except SyntaxError:
+            # Fallback to regex parsing if AST fails
+            pattern = r'NODE_CLASS_MAPPINGS\s*=\s*{([^}]*)}'
+            match = re.search(pattern, python_content, re.DOTALL)
+            
+            if match:
+                content = match.group(1)
+                # Extract string keys
+                key_pattern = r'"([^"]+)"\s*:'
+                keys = re.findall(key_pattern, content)
+                for key in keys:
+                    mappings[key] = key
+                    
+                # Also try single quotes
+                key_pattern = r"'([^']+)'\s*:"
+                keys = re.findall(key_pattern, content)
+                for key in keys:
+                    mappings[key] = key
+        
+        return mappings
+
+    def analyze_repository_node_mappings(self, repo_url: str) -> dict[str, str]:
+        """Analyze a repository to extract all NODE_CLASS_MAPPINGS.
+
+        Args:
+            repo_url: GitHub repository URL
+
+        Returns:
+            Dictionary mapping node class names to this repository
+        """
+        mappings = {}
+        
+        # Common file patterns to check
+        files_to_check = [
+            '__init__.py',
+            'nodes.py',
+            'node.py',
+            'custom_nodes.py',
+        ]
+        
+        # Also check for main Python files in root
+        repo_name = repo_url.split('/')[-1].replace('.git', '')
+        files_to_check.extend([
+            f"{repo_name}.py",
+            "main.py",
+        ])
+        
+        for file_path in files_to_check:
+            content = self.fetch_github_raw_file(repo_url, file_path)
+            if content:
+                file_mappings = self.parse_node_class_mappings(content)
+                for class_name in file_mappings:
+                    mappings[class_name] = repo_url
+        
+        return mappings
+
+    def build_comprehensive_node_mapping(self, force_refresh: bool = False) -> dict[str, str]:
+        """Build comprehensive mapping of node class names to repositories.
+
+        Args:
+            force_refresh: Force refresh even if cache exists
+
+        Returns:
+            Dictionary mapping node class names to repository URLs
+        """
+        # Check if we have a cached version
+        if (not force_refresh and 
+            self._node_mapping_cache_path and 
+            self._node_mapping_cache_path.exists()):
+            
+            try:
+                with open(self._node_mapping_cache_path, 'r') as f:
+                    cached_data = json.load(f)
+                    
+                # Check if cache is recent (less than 24 hours old)
+                cache_time = cached_data.get('timestamp', 0)
+                if time.time() - cache_time < 24 * 3600:  # 24 hours
+                    self._comprehensive_node_mapping = cached_data.get('mappings', {})
+                    return self._comprehensive_node_mapping
+            except Exception:
+                pass
+        
+        print("Building comprehensive node class mapping (this may take a few minutes)...")
+        
+        # Get all repositories from ComfyUI-Manager database
+        try:
+            database = self.load_comfyui_manager_database()
+            repositories = []
+            
+            for entry in database.get('custom_nodes', []):
+                repo_url = entry.get('reference', '')
+                if repo_url and self.validate_repository_url(repo_url):
+                    repositories.append(repo_url)
+            
+            print(f"Analyzing {len(repositories)} repositories...")
+            
+            comprehensive_mapping = {}
+            processed = 0
+            
+            for repo_url in repositories:
+                try:
+                    repo_mappings = self.analyze_repository_node_mappings(repo_url)
+                    comprehensive_mapping.update(repo_mappings)
+                    processed += 1
+                    
+                    if processed % 10 == 0:
+                        print(f"Processed {processed}/{len(repositories)} repositories...")
+                        
+                except Exception as e:
+                    # Continue with other repositories if one fails
+                    continue
+            
+            # Cache the results
+            if self._node_mapping_cache_path:
+                self._node_mapping_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_data = {
+                    'timestamp': time.time(),
+                    'mappings': comprehensive_mapping,
+                    'total_repositories': len(repositories),
+                    'processed_repositories': processed,
+                    'total_node_classes': len(comprehensive_mapping)
+                }
+                
+                with open(self._node_mapping_cache_path, 'w') as f:
+                    json.dump(cache_data, f, indent=2)
+            
+            self._comprehensive_node_mapping = comprehensive_mapping
+            print(f"✓ Built mapping for {len(comprehensive_mapping)} node classes from {processed} repositories")
+            
+            return comprehensive_mapping
+            
+        except Exception as e:
+            print(f"Warning: Failed to build comprehensive mapping: {e}")
+            return {}
+
+    def find_repository_by_class_name_comprehensive(self, class_name: str) -> str | None:
+        """Find repository URL using comprehensive node class mapping.
+
+        Args:
+            class_name: The class name of the custom node
+
+        Returns:
+            Repository URL if found, None otherwise
+        """
+        # Load comprehensive mapping if not already loaded
+        if not self._comprehensive_node_mapping:
+            self._comprehensive_node_mapping = self.build_comprehensive_node_mapping()
+        
+        # Direct lookup
+        if class_name in self._comprehensive_node_mapping:
+            return self._comprehensive_node_mapping[class_name]
+        
+        # Try case-insensitive lookup
+        for mapped_class_name, repo_url in self._comprehensive_node_mapping.items():
+            if class_name.lower() == mapped_class_name.lower():
+                return repo_url
+        
+        # Try partial matching (fallback)
+        for mapped_class_name, repo_url in self._comprehensive_node_mapping.items():
+            if (class_name.lower() in mapped_class_name.lower() or 
+                mapped_class_name.lower() in class_name.lower()):
+                return repo_url
+        
+        return None
+
+    def resolve_custom_node_repositories(
+        self, 
+        custom_nodes: list[dict[str, Any]], 
+        manual_repos: dict[str, str] | None = None,
+        interactive: bool = True,
+        use_comprehensive_lookup: bool = True
+    ) -> list[NodeMetadata]:
+        """Resolve custom node class names to repositories with hybrid approach.
+
+        Args:
+            custom_nodes: List of custom node dictionaries from extract_custom_nodes
+            manual_repos: Optional dictionary of class_name -> repository_url
+            interactive: Whether to prompt for missing repositories
+            use_comprehensive_lookup: Whether to use comprehensive NODE_CLASS_MAPPINGS analysis
+
+        Returns:
+            List of NodeMetadata with resolved repository URLs
+        """
+        resolved_nodes = []
+        manual_repos = manual_repos or {}
+        
+        for node in custom_nodes:
+            class_name = node.get('class_type', '')
+            
+            # Skip if no class name
+            if not class_name:
+                continue
+            
+            repository_url = None
+            
+            # 1. Check if already in metadata and not None
+            if 'repository' in node and node['repository']:
+                repository_url = node['repository']
+            
+            # 2. Check manual repositories first
+            elif class_name in manual_repos:
+                repository_url = manual_repos[class_name]
+            
+            # 3. Try automatic lookup
+            else:
+                if use_comprehensive_lookup:
+                    # Use comprehensive approach (parses actual NODE_CLASS_MAPPINGS)
+                    repository_url = self.find_repository_by_class_name_comprehensive(class_name)
+                    
+                    # Fallback to simple lookup if comprehensive fails
+                    if not repository_url:
+                        repository_url = self.find_repository_by_class_name(class_name)
+                else:
+                    # Use simple pattern matching approach
+                    repository_url = self.find_repository_by_class_name(class_name)
+            
+            # 4. Fallback to manual input if interactive
+            if not repository_url and interactive:
+                repository_url = self.prompt_for_manual_repository(class_name)
+            
+            # Create NodeMetadata if we have a repository
+            if repository_url and self.validate_repository_url(repository_url):
+                node_metadata = NodeMetadata(
+                    name=class_name.replace('|', '_').replace(' ', '_'),  # Safe filename
+                    repository=repository_url,
+                    commit_hash=node.get('commit')
+                )
+                resolved_nodes.append(node_metadata)
+            else:
+                print(f"Warning: Could not resolve repository for custom node '{class_name}'")
+        
+        return resolved_nodes
+
+    def prompt_for_manual_repository(self, class_name: str) -> str | None:
+        """Prompt user for manual repository URL input.
+
+        Args:
+            class_name: The class name of the custom node
+
+        Returns:
+            Repository URL if provided, None if skipped
+        """
+        print(f"\nCustom node '{class_name}' not found in ComfyUI-Manager database.")
+        print(f"Please provide the GitHub repository URL for '{class_name}':")
+        print("(Press Enter to skip this node)")
+        
+        try:
+            repo_url = input("Repository URL: ").strip()
+            
+            if not repo_url:
+                return None
+            
+            if self.validate_repository_url(repo_url):
+                # Cache the manual mapping
+                self._node_mapping_cache[class_name] = repo_url
+                return repo_url
+            else:
+                print(f"Invalid repository URL: {repo_url}")
+                return None
+                
+        except (KeyboardInterrupt, EOFError):
+            return None
 
     def generate_install_commands(self, node_metadata: NodeMetadata) -> list[str]:
         """Generate installation commands for a custom node.

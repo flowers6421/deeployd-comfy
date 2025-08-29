@@ -101,26 +101,26 @@ class DockerfileBuilder:
 
     def create_with_cuda(
         self,
-        cuda_version: str = "11.8",
-        cudnn_version: str = "8",
+        cuda_version: str = "12.8.0",
         ubuntu_version: str = "22.04",
     ) -> str:
         """Create Dockerfile with CUDA support.
 
         Args:
             cuda_version: CUDA version
-            cudnn_version: cuDNN version
             ubuntu_version: Ubuntu version
 
         Returns:
             Dockerfile content
         """
         dockerfile = [
-            f"FROM nvidia/cuda:{cuda_version}.0-cudnn{cudnn_version}-runtime-ubuntu{ubuntu_version}",
+            f"FROM nvidia/cuda:{cuda_version}-runtime-ubuntu{ubuntu_version}",
             "",
             "# Install Python",
             "RUN apt-get update && \\",
             "    apt-get install -y python3 python3-pip && \\",
+            "    ln -s /usr/bin/python3 /usr/bin/python && \\",
+            "    ln -s /usr/bin/pip3 /usr/bin/pip && \\",
             "    apt-get clean && \\",
             "    rm -rf /var/lib/apt/lists/*",
             "",
@@ -304,6 +304,7 @@ class DockerfileBuilder:
     def build_for_workflow(
         self,
         dependencies: dict[str, Any],
+        custom_nodes: list | None = None,
         base_image: str = "python:3.12-slim",
         use_cuda: bool = False,
     ) -> str:
@@ -311,6 +312,7 @@ class DockerfileBuilder:
 
         Args:
             dependencies: Workflow dependencies
+            custom_nodes: List of custom node metadata
             base_image: Base Docker image
             use_cuda: Whether to use CUDA
 
@@ -320,15 +322,34 @@ class DockerfileBuilder:
         lines = []
 
         # Base image
+        lines.append(f"FROM {base_image}")
+        lines.append("")
+
+        # Install Python and create symlinks for CUDA images
         if use_cuda:
-            lines.append(self.create_with_cuda())
-        else:
-            lines.append(f"FROM {base_image}")
+            lines.append("# Install Python and create symlinks")
+            lines.append("RUN apt-get update && \\")
+            lines.append("    apt-get install -y python3 python3-pip && \\")
+            lines.append("    ln -sf /usr/bin/python3 /usr/bin/python && \\")
+            lines.append("    ln -sf /usr/bin/pip3 /usr/bin/pip && \\")
+            lines.append("    apt-get clean && \\")
+            lines.append("    rm -rf /var/lib/apt/lists/*")
             lines.append("")
 
         # System dependencies
         lines.append("# Install system dependencies")
-        lines.extend(self.add_system_packages(["git", "wget", "curl"]))
+        if use_cuda:
+            # CUDA images need more system packages for custom nodes
+            system_packages = [
+                "git", "wget", "curl",
+                "libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", 
+                "libxrender-dev", "libgomp1", "libglib2.0-0",
+                "ffmpeg", "libsm6", "libxext6"
+            ]
+        else:
+            system_packages = ["git", "wget", "curl"]
+        
+        lines.extend(self.add_system_packages(system_packages))
         lines.append("")
 
         # Install ComfyUI
@@ -339,17 +360,59 @@ class DockerfileBuilder:
         lines.append("WORKDIR /app/ComfyUI")
         lines.append("")
 
-        # Install PyTorch (CPU version for smaller image)
-        lines.append("# Install PyTorch")
-        lines.append(
-            "RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
-        )
+        # Install PyTorch
+        if use_cuda:
+            lines.append("# Install PyTorch with CUDA support")
+            lines.append(
+                "RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+            )
+        else:
+            lines.append("# Install PyTorch (CPU version)")
+            lines.append(
+                "RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
+            )
         lines.append("")
 
         # Install ComfyUI requirements
         lines.append("# Install ComfyUI requirements")
         lines.append("RUN pip install --no-cache-dir -r requirements.txt")
         lines.append("")
+
+        # Install custom nodes
+        if custom_nodes:
+            lines.append("# Install custom nodes")
+            lines.append("WORKDIR /app/ComfyUI/custom_nodes")
+            lines.append("")
+            
+            # Collect all dependencies from custom nodes
+            all_python_deps = set()
+            
+            for node in custom_nodes:
+                # Clone repository
+                lines.append(f"# Install {node.name}")
+                lines.append(f"RUN git clone {node.repository} {node.name}")
+                
+                # Checkout specific commit if provided
+                if node.commit_hash:
+                    lines.append(f"RUN cd {node.name} && git checkout {node.commit_hash}")
+                
+                # Check for requirements.txt and install dependencies
+                lines.append(f"RUN if [ -f {node.name}/requirements.txt ]; then pip install --no-cache-dir -r {node.name}/requirements.txt; fi")
+                
+                # Collect Python dependencies
+                all_python_deps.update(node.python_dependencies)
+                
+                lines.append("")
+            
+            # Install collected Python dependencies
+            if all_python_deps:
+                deps_str = " ".join(sorted(all_python_deps))
+                lines.append("# Install additional Python dependencies for custom nodes")
+                lines.append(f"RUN pip install --no-cache-dir {deps_str}")
+                lines.append("")
+            
+            lines.append("WORKDIR /app/ComfyUI")
+            lines.append("")
 
         # Python packages
         python_packages = list(dependencies.get("python_packages", []))
