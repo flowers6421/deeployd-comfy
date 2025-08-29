@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # ComfyUI Backend Service
+  comfyui:
+    image: comfyui-workflow:latest
+    container_name: comfyui-backend
+    ports:
+      - "8188:8188"
+    volumes:
+      # Mount models from host
+      - /home/ubuntu/ComfyUI/models:/app/ComfyUI/models
+      # Shared output directory
+      - comfyui-outputs:/app/ComfyUI/output
+      # Input directory
+      - ./inputs:/app/ComfyUI/input
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - comfyui-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8188/system_stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Workflow API Service
+  workflow-api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    container_name: workflow-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount workflow file
+      - ./tests/real_workflow.json:/app/workflow.json:ro
+      # Shared output directory
+      - comfyui-outputs:/app/outputs
+    environment:
+      - COMFYUI_HOST=comfyui
+      - COMFYUI_PORT=8188
+      - WORKFLOW_PATH=/app/workflow.json
+      - OUTPUT_DIR=/app/outputs
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      comfyui:
+        condition: service_healthy
+    networks:
+      - comfyui-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: comfyui-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - workflow-api
+      - comfyui
+    networks:
+      - comfyui-network
+    profiles:
+      - with-proxy
+
+networks:
+  comfyui-network:
+    driver: bridge
+
+volumes:
+  comfyui-outputs:
+    driver: local

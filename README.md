@@ -60,6 +60,7 @@ The tool generates:
 
 ## Running the Container
 
+### Single Container Mode (ComfyUI only)
 ```bash
 # Build container from workflow
 python main.py build-workflow tests/real_workflow.json --image-name comfyui-workflow --tag latest
@@ -69,12 +70,55 @@ docker run -d --name comfyui \
   -p 8188:8188 \
   -v /path/to/models:/app/ComfyUI/models \
   comfyui-workflow:latest
-
-# Submit workflow via API
-curl -X POST http://localhost:8188/prompt \
-  -H "Content-Type: application/json" \
-  -d @workflow.json
 ```
+
+### Multi-Container Mode with API (Recommended)
+```bash
+# Start both ComfyUI and API containers
+docker-compose up -d
+
+# The API will be available at http://localhost:8000
+# ComfyUI interface at http://localhost:8188
+```
+
+## API Usage
+
+### Generate Image
+```bash
+# Simple generation
+curl -X POST http://localhost:8000/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "positive_prompt": "a beautiful landscape",
+    "negative_prompt": "ugly, blurry",
+    "seed": 12345,
+    "width": 1024,
+    "height": 1024,
+    "steps": 20
+  }'
+
+# Async generation (returns immediately)
+curl -X POST "http://localhost:8000/api/generate?wait=false" \
+  -H "Content-Type: application/json" \
+  -d '{"positive_prompt": "a cat"}'
+```
+
+### Check Status
+```bash
+curl http://localhost:8000/api/status/{prompt_id}
+```
+
+### WebSocket Progress
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/{prompt_id}');
+ws.onmessage = (event) => {
+  const status = JSON.parse(event.data);
+  console.log('Progress:', status);
+};
+```
+
+### API Documentation
+Visit `http://localhost:8000/docs` for interactive OpenAPI documentation.
 
 ## License
 
