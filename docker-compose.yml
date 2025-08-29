@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # ComfyUI Backend Service
   comfyui:
-    image: comfyui-final-updated:latest
+    image: comfyui-workflow:latest
     container_name: comfyui-backend
     ports:
       - "8188:8188"
