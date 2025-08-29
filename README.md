@@ -1,19 +1,22 @@
 # DeepLoyd ComfyUI Dockerizer
 
-Transform ComfyUI workflows into Docker containers with API endpoints.
+Transform ComfyUI workflows into production-ready Docker containers with automatic API generation and documentation.
 
 ## What it does
 
-Takes ComfyUI workflows → Makes Docker containers → Generates APIs
+Takes ComfyUI workflows → Makes Docker containers → Generates APIs → Creates Documentation
 
 ## Features
 
-- Parse ComfyUI workflows (UI and API formats)
-- Extract all dependencies automatically (models, custom nodes, Python packages)
-- Generate optimized Dockerfiles with GPU support
-- Create REST API configurations from workflows
-- 90% test coverage (253 tests passing)
-- Successfully tested with production workflows
+- **Workflow Support**: Parse both UI and API format ComfyUI workflows
+- **Dependency Detection**: Automatically extract models, custom nodes, and Python packages
+- **Interactive Setup**: Prompts for custom node GitHub URLs and model paths
+- **Docker Generation**: Create optimized Dockerfiles with GPU/CPU support
+- **API Generation**: Generate REST API endpoints with full parameter extraction
+- **Documentation**: Auto-generate HTML docs, OpenAPI specs, and Docker run scripts
+- **Volume Mounting**: Automatic model folder mounting for easy model management
+- **Custom Node Resolution**: Smart detection and installation of custom nodes
+- **Test Coverage**: 90% test coverage with 253+ passing tests
 
 ## Quick Start
 
@@ -27,15 +30,37 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements-dev.txt
 
-# Use
+# Build workflow (interactive mode)
 python main.py build-workflow your_workflow.json
+
+# Build with options
+python main.py build-workflow workflow.json \
+  --output-dir ./build \
+  --models-path /path/to/ComfyUI/models
 ```
+
+## Interactive Workflow Building
+
+The tool now provides an interactive experience:
+
+1. **Custom Node Detection**: Automatically detects custom nodes and prompts for GitHub URLs
+2. **Model Path Configuration**: Asks for your ComfyUI models folder to set up volume mounts
+3. **Documentation Generation**: Creates comprehensive HTML documentation automatically
 
 ## Commands
 
 ```bash
-# Build workflow into Docker container
+# Build workflow into Docker container (interactive)
 python main.py build-workflow workflow.json
+
+# Build without prompts
+python main.py build-workflow workflow.json --no-interactive
+
+# Specify models path
+python main.py build-workflow workflow.json --models-path /path/to/models
+
+# Skip Docker build (only generate files)
+python main.py build-workflow workflow.json --no-build-image
 
 # Analyze workflow dependencies
 python main.py analyze-workflow workflow.json
@@ -43,6 +68,16 @@ python main.py analyze-workflow workflow.json
 # Validate workflow
 python main.py validate-workflow workflow.json
 ```
+
+## Generated Files
+
+Each build creates:
+- `Dockerfile` - Optimized Docker configuration
+- `docker_run.sh` - Ready-to-use run script with volume mounts
+- `api_config.json` - API endpoint configuration
+- `openapi.json` - Full OpenAPI/Swagger specification
+- `documentation.html` - Beautiful HTML documentation
+- `.cache/` - Cached custom node information
 
 ## Testing
 

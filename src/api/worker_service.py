@@ -467,6 +467,13 @@ class WorkerService:
     
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
+        import threading
+        
+        # Skip signal handlers if not in main thread (e.g., during tests)
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Skipping signal handler setup - not in main thread")
+            return
+            
         def signal_handler(sig, frame):
             logger.info(f"Received signal {sig}, initiating shutdown")
             self._shutdown_event.set()

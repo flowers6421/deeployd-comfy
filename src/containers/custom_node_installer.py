@@ -457,6 +457,9 @@ class CustomNodeInstaller:
         resolved_nodes = []
         manual_repos = manual_repos or {}
         
+        # First, collect all unresolved custom nodes
+        unresolved_nodes = []
+        
         for node in custom_nodes:
             class_name = node.get('class_type', '')
             
@@ -513,26 +516,36 @@ class CustomNodeInstaller:
         Returns:
             Repository URL if provided, None if skipped
         """
-        print(f"\nCustom node '{class_name}' not found in ComfyUI-Manager database.")
-        print(f"Please provide the GitHub repository URL for '{class_name}':")
+        print("\n" + "="*60)
+        print(f"🔍 Custom Node Found: '{class_name}'")
+        print("="*60)
+        print("\nThis custom node was not found in the ComfyUI-Manager database.")
+        print("Please provide the GitHub repository URL for this node.")
+        print("\nExample: https://github.com/username/repository-name")
         print("(Press Enter to skip this node)")
+        print("-"*60)
         
-        try:
-            repo_url = input("Repository URL: ").strip()
-            
-            if not repo_url:
-                return None
-            
-            if self.validate_repository_url(repo_url):
-                # Cache the manual mapping
-                self._node_mapping_cache[class_name] = repo_url
-                return repo_url
-            else:
-                print(f"Invalid repository URL: {repo_url}")
-                return None
+        while True:
+            try:
+                repo_url = input(f"GitHub URL for '{class_name}': ").strip()
                 
-        except (KeyboardInterrupt, EOFError):
-            return None
+                if not repo_url:
+                    print(f"⚠️  Skipping '{class_name}'")
+                    return None
+                
+                if self.validate_repository_url(repo_url):
+                    # Cache the manual mapping
+                    self._node_mapping_cache[class_name] = repo_url
+                    print(f"✅ Repository URL accepted for '{class_name}'")
+                    return repo_url
+                else:
+                    print(f"❌ Invalid repository URL: {repo_url}")
+                    print("Please enter a valid GitHub URL (e.g., https://github.com/user/repo)")
+                    continue
+                    
+            except (KeyboardInterrupt, EOFError):
+                print("\n⚠️  Skipping remaining custom nodes")
+                return None
 
     def generate_install_commands(self, node_metadata: NodeMetadata) -> list[str]:
         """Generate installation commands for a custom node.

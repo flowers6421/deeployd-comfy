@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from src.api.exceptions import APIError
 from src.api.routers import container_router, model_router, workflow_router
+from src.api.openapi_generator import OpenAPIGenerator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -136,6 +137,24 @@ def create_app() -> FastAPI:
             "description": "API for ComfyUI workflow to container translation",
             "workflows_loaded": 0,  # Will be updated when workflows are loaded
         }
+    
+    # OpenAPI spec endpoint
+    @app.get(f"{settings.api_prefix}/openapi.json")
+    async def get_openapi_spec():
+        """Get OpenAPI specification."""
+        generator = OpenAPIGenerator(app)
+        
+        # Load workflows if available
+        workflows = {}
+        # TODO: Load actual workflows from configuration or database
+        
+        spec = generator.generate_full_spec(
+            title="ComfyUI Workflow API",
+            version="1.0.0",
+            workflows=workflows
+        )
+        
+        return spec
 
     # Register routers
     app.include_router(

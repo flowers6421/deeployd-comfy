@@ -14,6 +14,13 @@ class TestWorkflowConverter:
     @pytest.fixture
     def ui_workflow(self):
         """Load real UI format workflow."""
+        workflow_path = Path(__file__).parent.parent / "test_workflow_ui.json"
+        with open(workflow_path) as f:
+            return json.load(f)
+    
+    @pytest.fixture
+    def api_workflow(self):
+        """Load real API format workflow."""
         workflow_path = Path(__file__).parent.parent / "real_workflow.json"
         with open(workflow_path) as f:
             return json.load(f)
