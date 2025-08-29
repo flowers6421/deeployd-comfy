@@ -22,8 +22,8 @@ COPY src/api/ /app/src/api/
 # Copy the real workflow file
 COPY tests/real_workflow.json /app/workflow.json
 
-# Create output directory
-RUN mkdir -p /app/outputs
+# Create output directories (both main and fallback)
+RUN mkdir -p /app/outputs /tmp/outputs
 
 # Expose port
 EXPOSE 8000

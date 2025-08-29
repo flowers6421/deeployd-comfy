@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import time
 from typing import Optional, List, Dict, Any
@@ -202,7 +203,9 @@ class WorkerPool:
         
         self.workers: Dict[str, Worker] = {}
         self.worker_tasks: Dict[str, asyncio.Task] = {}
-        self.resource_monitor = ResourceMonitor()
+        self.resource_monitor = ResourceMonitor(
+            output_dir=os.getenv("OUTPUT_DIR", "/app/outputs")
+        )
         
         # Create shared task executor
         self.task_executor = TaskExecutor(
