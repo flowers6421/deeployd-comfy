@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 # Copy application code
 COPY src/api/ /app/src/api/
 
-# Copy workflow file (will be mounted in production)
-COPY workflow.json /app/workflow.json
+# Copy the real workflow file
+COPY tests/real_workflow.json /app/workflow.json
 
 # Create output directory
 RUN mkdir -p /app/outputs

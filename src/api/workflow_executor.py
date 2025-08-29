@@ -122,6 +122,10 @@ class WorkflowExecutor:
             "client_id": client_id
         }
         
+        # Log what we're sending for debugging
+        import json
+        logger.info(f"Submitting workflow to ComfyUI: {json.dumps(list(workflow.keys())[:5])}")
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.comfyui_url}/prompt",
@@ -285,6 +289,39 @@ class WorkflowExecutor:
             }
         
         # Wait for completion
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            status = await self.get_status(prompt_id)
+            
+            if status["status"] in ["completed", "failed"]:
+                if status["status"] == "completed":
+                    # Get images
+                    images = await self.get_images(prompt_id)
+                    status["images"] = images
+                
+                return status
+            
+            await asyncio.sleep(1.0)
+        
+        raise HTTPException(
+            status_code=408,
+            detail=f"Workflow execution timeout after {timeout} seconds"
+        )
+    
+    async def wait_for_completion(
+        self,
+        prompt_id: str,
+        timeout: float = 300.0
+    ) -> Dict[str, Any]:
+        """Wait for workflow completion.
+        
+        Args:
+            prompt_id: Prompt ID to wait for
+            timeout: Maximum time to wait (seconds)
+            
+        Returns:
+            Execution result with status and outputs
+        """
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < timeout:
             status = await self.get_status(prompt_id)

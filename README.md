@@ -74,6 +74,9 @@ docker run -d --name comfyui \
 
 ### Multi-Container Mode with API (Recommended)
 ```bash
+# Build API container
+docker build -f docker/api/Dockerfile -t workflow-api .
+
 # Start both ComfyUI and API containers
 docker-compose up -d
 
@@ -101,11 +104,13 @@ curl -X POST http://localhost:8000/api/generate \
 curl -X POST "http://localhost:8000/api/generate?wait=false" \
   -H "Content-Type: application/json" \
   -d '{"positive_prompt": "a cat"}'
+# Returns: {"prompt_id": "xxx", "status": "submitted"}
 ```
 
 ### Check Status
 ```bash
 curl http://localhost:8000/api/status/{prompt_id}
+# Returns: {"status": "completed", "images": [...]}
 ```
 
 ### WebSocket Progress
