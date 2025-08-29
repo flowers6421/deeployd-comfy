@@ -109,8 +109,9 @@ ehthumbs_vista.db
 docker-compose.override.yml
 .dockerignore
 
-# Build outputs (keeping the tracked build/Dockerfile for now)
-# build/
+# Build outputs
+build/
+build-*/
 
 # Model files (large files)
 *.safetensors
