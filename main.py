@@ -4,6 +4,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -18,6 +19,8 @@ from src.workflows.analyzer import NodeAnalyzer
 from src.workflows.dependencies import DependencyExtractor
 from src.workflows.parser import WorkflowParser
 from src.workflows.validator import WorkflowValidator
+from src.db.database import init_db, get_database
+from src.db.repositories import WorkflowRepository, BuildRepository
 
 # Configure logging
 logging.basicConfig(
@@ -542,6 +545,61 @@ def build_workflow(
                 console.print(f"[green]✓[/green] Docker run script saved: {docker_run_cmd_path}")
                 console.print(f"[cyan]Run the container with: ./build-test/docker_run.sh[/cyan]")
 
+        # Extract API parameters for database storage
+        api_generator = WorkflowAPIGenerator()
+        parameters = api_generator.extract_input_parameters(workflow_data)
+        
+        # Convert parameters to JSON-serializable format
+        param_list = []
+        for p in parameters:
+            param_dict = {
+                "name": p.name,
+                "type": str(p.type.value) if hasattr(p.type, "value") else str(p.type),
+                "required": p.required,
+                "default": p.default,
+                "description": p.description,
+            }
+            if p.minimum is not None:
+                param_dict["minimum"] = p.minimum
+            if p.maximum is not None:
+                param_dict["maximum"] = p.maximum
+            if p.enum:
+                param_dict["enum"] = p.enum
+            param_list.append(param_dict)
+        
+        # Save workflow and build info to database
+        db = get_database()
+        workflow_id = None
+        
+        with db.get_session() as session:
+            workflow_repo = WorkflowRepository(session)
+            
+            # Convert dependencies for database storage
+            dependencies_for_db = dependencies.copy()
+            if isinstance(dependencies_for_db.get("custom_nodes"), set):
+                dependencies_for_db["custom_nodes"] = list(dependencies_for_db["custom_nodes"])
+            if isinstance(dependencies_for_db.get("python_packages"), set):
+                dependencies_for_db["python_packages"] = list(dependencies_for_db["python_packages"])
+            for key in dependencies_for_db.get("models", {}):
+                if isinstance(dependencies_for_db["models"][key], set):
+                    dependencies_for_db["models"][key] = list(dependencies_for_db["models"][key])
+            
+            # Check if workflow exists or create new
+            existing = workflow_repo.get_by_name(workflow_path.stem)
+            if existing:
+                workflow_id = existing.id
+                console.print(f"[cyan]Using existing workflow from database: {workflow_id[:8]}[/cyan]")
+            else:
+                workflow = workflow_repo.create(
+                    name=workflow_path.stem,
+                    definition=workflow_data,
+                    dependencies=dependencies_for_db,
+                    parameters=param_list,
+                    description=f"Auto-saved from build-workflow command"
+                )
+                workflow_id = workflow.id
+                console.print(f"[green]Workflow saved to database: {workflow_id[:8]}[/green]")
+        
         # Step 7: Build Docker image (if requested)
         if build_image:
             with Progress(
@@ -551,13 +609,40 @@ def build_workflow(
             ) as progress:
                 task = progress.add_task("Building Docker image...", total=None)
 
+                build_id = None
                 try:
                     docker_manager = DockerManager()
+                    
+                    # Create build record in database
+                    with db.get_session() as session:
+                        build_repo = BuildRepository(session)
+                        
+                        # Read Dockerfile content for tracking
+                        with open(dockerfile_path) as f:
+                            dockerfile_for_db = f.read()
+                        
+                        build = build_repo.create_build(
+                            workflow_id=workflow_id,
+                            image_name=image_name,
+                            tag=tag,
+                            dockerfile=dockerfile_for_db
+                        )
+                        build_id = build.id
+                        console.print(f"[cyan]Build tracked in database: {build_id[:8]}[/cyan]")
 
                     # Check if Docker is available
                     if not docker_manager.is_available():
                         console.print("[red]✗ Docker is not available[/red]")
                         console.print("Please ensure Docker daemon is running")
+                        
+                        # Update build status as failed
+                        with db.get_session() as session:
+                            build_repo = BuildRepository(session)
+                            build_repo.update_build_status(
+                                build_id,
+                                status="failed",
+                                error="Docker daemon not available"
+                            )
                         raise typer.Exit(1)
 
                     # Build image
@@ -580,6 +665,16 @@ def build_workflow(
                         console.print(
                             f"[green]✓[/green] Docker image built: {full_image_name}"
                         )
+                        
+                        # Update build status as successful
+                        with db.get_session() as session:
+                            build_repo = BuildRepository(session)
+                            build_repo.update_build_status(
+                                build_id,
+                                status="success",
+                                logs="Build completed successfully",
+                                image_size=2500000000  # TODO: Get actual image size
+                            )
 
                         # Push to registry if requested
                         if push and registry:
@@ -596,6 +691,17 @@ def build_workflow(
 
                 except Exception as e:
                     console.print(f"[red]✗ Docker build failed: {e}[/red]")
+                    
+                    # Update build status as failed
+                    if build_id:
+                        with db.get_session() as session:
+                            build_repo = BuildRepository(session)
+                            build_repo.update_build_status(
+                                build_id,
+                                status="failed",
+                                error=str(e)
+                            )
+                    
                     raise typer.Exit(1) from e
 
         # Step 7: Generate API configuration and documentation
@@ -606,32 +712,12 @@ def build_workflow(
         ) as progress:
             task = progress.add_task("Generating API configuration and documentation...", total=None)
 
-            api_generator = WorkflowAPIGenerator()
+            # API config already generated earlier
             api_config = api_generator.generate_endpoint_config(workflow_data)
-            parameters = api_generator.extract_input_parameters(workflow_data)
 
             # Save API configuration
             api_config_path = output_dir / "api_config.json"
             with open(api_config_path, "w") as f:
-                # Convert parameters to JSON-serializable format
-                param_list = []
-                for p in parameters:
-                    param_dict = {
-                        "name": p.name,
-                        "type": str(p.type.value)
-                        if hasattr(p.type, "value")
-                        else str(p.type),
-                        "required": p.required,
-                        "default": p.default,
-                        "description": p.description,
-                    }
-                    if p.minimum is not None:
-                        param_dict["minimum"] = p.minimum
-                    if p.maximum is not None:
-                        param_dict["maximum"] = p.maximum
-                    if p.enum:
-                        param_dict["enum"] = p.enum
-                    param_list.append(param_dict)
 
                 json.dump(
                     {
@@ -809,6 +895,168 @@ def analyze_workflow(
         raise typer.Exit(1) from None
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def save_workflow(
+    workflow_path: Path = typer.Argument(
+        ..., help="Path to ComfyUI workflow JSON file"
+    ),
+    name: Optional[str] = typer.Option(None, help="Workflow name (defaults to filename)"),
+    description: Optional[str] = typer.Option(None, help="Workflow description"),
+):
+    """Save a workflow to the database."""
+    console.print(f"[bold blue]Saving workflow:[/bold blue] {workflow_path}")
+    
+    try:
+        # Initialize database
+        db = init_db()
+        
+        with open(workflow_path) as f:
+            workflow_data = json.load(f)
+        
+        # Extract dependencies and parameters
+        extractor = DependencyExtractor()
+        dependencies = extractor.extract_all(workflow_data)
+        
+        # Convert sets to lists for JSON serialization
+        if isinstance(dependencies.get("custom_nodes"), set):
+            dependencies["custom_nodes"] = list(dependencies["custom_nodes"])
+        if isinstance(dependencies.get("python_packages"), set):
+            dependencies["python_packages"] = list(dependencies["python_packages"])
+        for key in dependencies.get("models", {}):
+            if isinstance(dependencies["models"][key], set):
+                dependencies["models"][key] = list(dependencies["models"][key])
+        
+        api_generator = WorkflowAPIGenerator()
+        parameters = api_generator.extract_input_parameters(workflow_data)
+        param_dicts = [
+            {
+                "name": p.name,
+                "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
+                "default": p.default,
+                "required": p.required,
+                "description": p.description
+            }
+            for p in parameters
+        ]
+        
+        # Save to database
+        with db.get_session() as session:
+            repo = WorkflowRepository(session)
+            workflow = repo.create(
+                name=name or workflow_path.stem,
+                definition=workflow_data,
+                dependencies=dependencies,
+                parameters=param_dicts,
+                description=description
+            )
+            
+        console.print(f"[green]✓ Workflow saved with ID: {workflow.id}[/green]")
+        console.print(f"  Name: {workflow.name}")
+        console.print(f"  Version: {workflow.version}")
+        
+    except Exception as e:
+        console.print(f"[red]Error saving workflow: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def list_workflows(
+    limit: int = typer.Option(10, help="Maximum number of workflows to show"),
+    name_filter: Optional[str] = typer.Option(None, help="Filter by name"),
+):
+    """List saved workflows from the database."""
+    try:
+        db = get_database()
+        
+        with db.get_session() as session:
+            repo = WorkflowRepository(session)
+            workflows = repo.list(limit=limit, name_filter=name_filter)
+            
+        if not workflows:
+            console.print("[yellow]No workflows found[/yellow]")
+            return
+            
+        # Create table
+        from rich.table import Table
+        table = Table(title="Saved Workflows")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Version")
+        table.add_column("Nodes")
+        table.add_column("Created", style="yellow")
+        
+        for workflow in workflows:
+            node_count = len(workflow.definition) if isinstance(workflow.definition, dict) else 0
+            created = workflow.created_at.strftime("%Y-%m-%d %H:%M")
+            table.add_row(
+                workflow.id[:8],
+                workflow.name,
+                str(workflow.version),
+                str(node_count),
+                created
+            )
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error listing workflows: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def build_history(
+    workflow_id: Optional[str] = typer.Option(None, help="Filter by workflow ID"),
+    limit: int = typer.Option(10, help="Maximum number of builds to show"),
+):
+    """Show container build history."""
+    try:
+        db = get_database()
+        
+        with db.get_session() as session:
+            build_repo = BuildRepository(session)
+            builds = build_repo.get_build_history(workflow_id=workflow_id, limit=limit)
+            
+        if not builds:
+            console.print("[yellow]No builds found[/yellow]")
+            return
+            
+        # Create table
+        from rich.table import Table
+        table = Table(title="Container Build History")
+        table.add_column("Build ID", style="cyan")
+        table.add_column("Workflow", style="green")
+        table.add_column("Image")
+        table.add_column("Status")
+        table.add_column("Duration")
+        table.add_column("Created", style="yellow")
+        
+        for build in builds:
+            status_color = {
+                "success": "green",
+                "failed": "red",
+                "building": "yellow",
+                "pending": "blue"
+            }.get(build.build_status, "white")
+            
+            duration = f"{build.build_duration:.1f}s" if build.build_duration else "-"
+            created = build.created_at.strftime("%Y-%m-%d %H:%M")
+            
+            table.add_row(
+                build.id[:8],
+                build.workflow_id[:8],
+                f"{build.image_name}:{build.tag}",
+                f"[{status_color}]{build.build_status}[/{status_color}]",
+                duration,
+                created
+            )
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error getting build history: {e}[/red]")
         raise typer.Exit(1) from e
 
 
