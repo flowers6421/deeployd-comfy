@@ -1069,5 +1069,26 @@ def version():
     console.print("License: MIT")
 
 
+@app.command()
+def api(
+    host: str = typer.Option("0.0.0.0", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", help="API server port"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload for development")
+):
+    """Start the FastAPI server for workflow management."""
+    import uvicorn
+    
+    console.print(f"[bold green]Starting API server on {host}:{port}[/bold green]")
+    console.print("[yellow]Press CTRL+C to stop[/yellow]")
+    
+    uvicorn.run(
+        "src.api.workflow_api:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info"
+    )
+
+
 if __name__ == "__main__":
     app()

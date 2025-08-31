@@ -23,7 +23,7 @@ class WorkflowExecutor:
         self,
         comfyui_host: str = "localhost",
         comfyui_port: int = 8188,
-        workflow_path: str = "workflow.json",
+        workflow_path: Optional[str] = None,
         output_dir: str = "/tmp/outputs"
     ):
         """Initialize workflow executor.
@@ -31,18 +31,23 @@ class WorkflowExecutor:
         Args:
             comfyui_host: ComfyUI server hostname
             comfyui_port: ComfyUI server port
-            workflow_path: Path to workflow JSON template
+            workflow_path: Optional path to workflow JSON template
             output_dir: Directory for output images
         """
         self.comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
         self.ws_url = f"ws://{comfyui_host}:{comfyui_port}/ws"
-        self.workflow_path = Path(workflow_path)
+        self.workflow_path = Path(workflow_path) if workflow_path else None
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Load workflow template
-        with open(self.workflow_path) as f:
-            self.workflow_template = json.load(f)
+        # Load workflow template if provided and exists
+        self.workflow_template = None
+        if self.workflow_path and self.workflow_path.exists():
+            with open(self.workflow_path) as f:
+                self.workflow_template = json.load(f)
+            logger.info(f"Loaded workflow template from {self.workflow_path}")
+        else:
+            logger.info("No workflow template loaded - will use workflows from database")
     
     def inject_parameters(
         self,
@@ -260,11 +265,21 @@ class WorkflowExecutor:
         
         return images
     
+    def load_workflow(self, workflow_data: Dict[str, Any]):
+        """Load a workflow dynamically.
+        
+        Args:
+            workflow_data: Workflow JSON data
+        """
+        self.workflow_template = workflow_data
+        logger.info("Loaded workflow dynamically")
+    
     async def execute_workflow(
         self,
         parameters: Dict[str, Any],
         wait_for_completion: bool = True,
-        timeout: float = 300.0
+        timeout: float = 300.0,
+        workflow_override: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Execute workflow with parameters.
         
@@ -272,12 +287,21 @@ class WorkflowExecutor:
             parameters: User parameters to inject
             wait_for_completion: Whether to wait for completion
             timeout: Maximum time to wait (seconds)
+            workflow_override: Optional workflow to use instead of template
             
         Returns:
             Execution result with status and outputs
         """
+        # Use provided workflow or template
+        base_workflow = workflow_override or self.workflow_template
+        if not base_workflow:
+            raise HTTPException(
+                status_code=400,
+                detail="No workflow available. Please provide a workflow or load a template."
+            )
+        
         # Inject parameters into workflow
-        workflow = self.inject_parameters(self.workflow_template, parameters)
+        workflow = self.inject_parameters(base_workflow, parameters)
         
         # Submit workflow
         prompt_id = await self.submit_workflow(workflow)

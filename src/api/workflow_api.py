@@ -20,6 +20,7 @@ from src.api.task_executor import TaskExecutor
 from src.api.worker_service import WorkerService
 from src.api.websocket_manager import WebSocketManager
 from src.api.resource_monitor import ResourceMonitor
+from src.api.routers.workflow_router import router as workflow_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,11 +34,16 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Workflow API Server with Queue and Worker Management")
     
     # Initialize components
+    workflow_path = os.getenv("WORKFLOW_PATH")
+    if workflow_path and not os.path.exists(workflow_path):
+        logger.warning(f"Workflow path {workflow_path} does not exist, ignoring")
+        workflow_path = None
+    
     app.state.workflow_executor = WorkflowExecutor(
         comfyui_host=os.getenv("COMFYUI_HOST", "localhost"),
         comfyui_port=int(os.getenv("COMFYUI_PORT", "8188")),
-        workflow_path=os.getenv("WORKFLOW_PATH", "/app/workflow.json"),
-        output_dir=os.getenv("OUTPUT_DIR", "/app/outputs")
+        workflow_path=workflow_path,
+        output_dir=os.getenv("OUTPUT_DIR", "/tmp/outputs")
     )
     
     # Initialize queue manager
@@ -107,10 +113,24 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
+    allow_credentials=False,  # Not using cookies, so set to False
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount routers
+app.include_router(workflow_router, prefix="/api/workflows", tags=["workflows"])
+
+# Temporary stub endpoints for builds and executions
+@app.get("/api/builds")
+async def list_builds():
+    """Temporary stub for builds endpoint."""
+    return []
+
+@app.get("/api/executions")
+async def list_executions():
+    """Temporary stub for executions endpoint."""
+    return []
 
 
 @app.get("/")
