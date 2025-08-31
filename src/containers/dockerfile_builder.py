@@ -341,14 +341,43 @@ class DockerfileBuilder:
         if use_cuda:
             # CUDA images need more system packages for custom nodes
             system_packages = [
-                "git", "wget", "curl",
-                "libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", 
-                "libxrender-dev", "libgomp1", "libglib2.0-0",
-                "ffmpeg", "libsm6", "libxext6"
+                "git",
+                "wget",
+                "curl",
+                "g++",
+                "gcc",
+                "cmake",
+                "build-essential",
+                "libgl1-mesa-glx",
+                "libglib2.0-0",
+                "libsm6",
+                "libxext6",
+                "libxrender-dev",
+                "libgomp1",
+                "libglib2.0-0",
+                "ffmpeg",
+                "libsm6",
+                "libxext6",
             ]
         else:
-            system_packages = ["git", "wget", "curl"]
-        
+            # CPU version also needs build tools and OpenGL/OpenCV dependencies for some custom nodes
+            system_packages = [
+                "git",
+                "wget",
+                "curl",
+                "g++",
+                "gcc",
+                "cmake",
+                "build-essential",
+                "libgl1",
+                "libglib2.0-0",
+                "libsm6",
+                "libxext6",
+                "libxrender1",
+                "libgomp1",
+                "libglu1-mesa",
+            ]
+
         lines.extend(self.add_system_packages(system_packages))
         lines.append("")
 
@@ -383,34 +412,40 @@ class DockerfileBuilder:
             lines.append("# Install custom nodes")
             lines.append("WORKDIR /app/ComfyUI/custom_nodes")
             lines.append("")
-            
+
             # Collect all dependencies from custom nodes
             all_python_deps = set()
-            
+
             for node in custom_nodes:
                 # Clone repository
                 lines.append(f"# Install {node.name}")
                 lines.append(f"RUN git clone {node.repository} {node.name}")
-                
+
                 # Checkout specific commit if provided
                 if node.commit_hash:
-                    lines.append(f"RUN cd {node.name} && git checkout {node.commit_hash}")
-                
+                    lines.append(
+                        f"RUN cd {node.name} && git checkout {node.commit_hash}"
+                    )
+
                 # Check for requirements.txt and install dependencies
-                lines.append(f"RUN if [ -f {node.name}/requirements.txt ]; then pip install --no-cache-dir -r {node.name}/requirements.txt; fi")
-                
+                lines.append(
+                    f"RUN if [ -f {node.name}/requirements.txt ]; then pip install --no-cache-dir -r {node.name}/requirements.txt; fi"
+                )
+
                 # Collect Python dependencies
                 all_python_deps.update(node.python_dependencies)
-                
+
                 lines.append("")
-            
+
             # Install collected Python dependencies
             if all_python_deps:
                 deps_str = " ".join(sorted(all_python_deps))
-                lines.append("# Install additional Python dependencies for custom nodes")
+                lines.append(
+                    "# Install additional Python dependencies for custom nodes"
+                )
                 lines.append(f"RUN pip install --no-cache-dir {deps_str}")
                 lines.append("")
-            
+
             lines.append("WORKDIR /app/ComfyUI")
             lines.append("")
 
@@ -433,9 +468,15 @@ class DockerfileBuilder:
         lines.append("")
 
         # Default command
-        lines.append(
-            'CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]'
-        )
+        if use_cuda:
+            lines.append(
+                'CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]'
+            )
+        else:
+            # Force CPU mode for non-CUDA environments
+            lines.append(
+                'CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--cpu"]'
+            )
 
         return "\n".join(lines)
 

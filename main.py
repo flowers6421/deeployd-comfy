@@ -4,7 +4,6 @@
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -15,12 +14,12 @@ from src.api.generator import WorkflowAPIGenerator
 from src.containers.custom_node_installer import CustomNodeInstaller
 from src.containers.docker_manager import DockerManager
 from src.containers.dockerfile_builder import DockerfileBuilder
+from src.db.database import get_database, init_db
+from src.db.repositories import BuildRepository, WorkflowRepository
 from src.workflows.analyzer import NodeAnalyzer
 from src.workflows.dependencies import DependencyExtractor
 from src.workflows.parser import WorkflowParser
 from src.workflows.validator import WorkflowValidator
-from src.db.database import init_db, get_database
-from src.db.repositories import WorkflowRepository, BuildRepository
 
 # Configure logging
 logging.basicConfig(
@@ -42,15 +41,24 @@ def generate_html_documentation(
     dependencies: dict,
     custom_nodes: list,
     docker_image: str,
-    models_path: str | None
+    models_path: str | None,
+    use_cuda: bool = False,
 ) -> str:
     """Generate HTML documentation for the workflow."""
-    
+
     # Generate parameter rows
     param_rows = ""
     for param in parameters:
-        required_badge = '<span class="badge bg-danger">Required</span>' if param.get("required") else '<span class="badge bg-secondary">Optional</span>'
-        default_val = f'<code>{param.get("default")}</code>' if param.get("default") is not None else "-"
+        required_badge = (
+            '<span class="badge bg-danger">Required</span>'
+            if param.get("required")
+            else '<span class="badge bg-secondary">Optional</span>'
+        )
+        default_val = (
+            f'<code>{param.get("default")}</code>'
+            if param.get("default") is not None
+            else "-"
+        )
         constraints = []
         if param.get("minimum") is not None:
             constraints.append(f"Min: {param['minimum']}")
@@ -59,7 +67,7 @@ def generate_html_documentation(
         if param.get("enum"):
             constraints.append(f"Values: {', '.join(param['enum'])}")
         constraint_str = "<br>".join(constraints) if constraints else "-"
-        
+
         param_rows += f"""
         <tr>
             <td><code>{param['name']}</code></td>
@@ -70,25 +78,30 @@ def generate_html_documentation(
             <td>{constraint_str}</td>
         </tr>
         """
-    
+
     # Generate model list
     model_list = ""
     for model_type, models in dependencies.get("models", {}).items():
         if models:
             for model in models:
-                model_list += f'<li><strong>{model_type}:</strong> {model}</li>'
-    
+                model_list += f"<li><strong>{model_type}:</strong> {model}</li>"
+
     # Generate custom node list
     custom_node_list = ""
     for node in custom_nodes:
         custom_node_list += f'<li><strong>{node.name}:</strong> <a href="{node.repository}" target="_blank">{node.repository}</a></li>'
-    
+
     # Docker run command
     docker_run_cmd = f"docker run -d --name {workflow_name} -p 8188:8188"
     if models_path:
         docker_run_cmd += f" -v {models_path}:/app/ComfyUI/models"
-    docker_run_cmd += f" --gpus all {docker_image}"
-    
+    # Only add GPU support if CUDA is available (not on macOS)
+    import platform
+
+    if use_cuda and platform.system() != "Darwin":
+        docker_run_cmd += " --gpus all"
+    docker_run_cmd += f" {docker_image}"
+
     html = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -117,7 +130,7 @@ def generate_html_documentation(
             <p class="lead">ComfyUI Workflow API Documentation</p>
         </div>
     </div>
-    
+
     <div class="container mt-4">
         <!-- Quick Start -->
         <div class="card">
@@ -129,12 +142,12 @@ def generate_html_documentation(
                 <div class="position-relative">
                     <pre><code class="language-bash">{docker_run_cmd}</code></pre>
                 </div>
-                
+
                 <h5 class="mt-3">Access the UI:</h5>
                 <p>Open your browser and navigate to: <a href="http://localhost:8188" target="_blank">http://localhost:8188</a></p>
             </div>
         </div>
-        
+
         <!-- API Parameters -->
         <div class="card">
             <div class="card-header">
@@ -160,7 +173,7 @@ def generate_html_documentation(
                 </div>
             </div>
         </div>
-        
+
         <!-- Dependencies -->
         <div class="card">
             <div class="card-header">
@@ -171,14 +184,14 @@ def generate_html_documentation(
                 <ul>
                     {model_list if model_list else '<li>No specific models required</li>'}
                 </ul>
-                
+
                 <h5>Custom Nodes:</h5>
                 <ul>
                     {custom_node_list if custom_node_list else '<li>No custom nodes required</li>'}
                 </ul>
             </div>
         </div>
-        
+
         <!-- API Example -->
         <div class="card">
             <div class="card-header">
@@ -211,7 +224,7 @@ else:
 </code></pre>
             </div>
         </div>
-        
+
         <!-- Docker Details -->
         <div class="card">
             <div class="card-header">
@@ -224,13 +237,13 @@ else:
                 <p><strong>GPU Support:</strong> Enabled (requires NVIDIA Docker runtime)</p>
             </div>
         </div>
-        
+
         <!-- Footer -->
         <div class="text-center py-4 text-muted">
             <small>Generated by ComfyUI Workflow to Docker Translator</small>
         </div>
     </div>
-    
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
@@ -257,14 +270,19 @@ def build_workflow(
     ),
     push: bool = typer.Option(False, help="Push image to registry after building"),
     custom_node_repos: str = typer.Option(
-        None, 
-        help="Custom node repositories in format 'NodeName1=repo1,NodeName2=repo2'"
+        None,
+        help="Custom node repositories in format 'NodeName1=repo1,NodeName2=repo2'",
     ),
     no_interactive: bool = typer.Option(
         False, help="Skip interactive prompts for missing custom nodes"
     ),
     comprehensive_lookup: bool = typer.Option(
-        True, help="Use comprehensive NODE_CLASS_MAPPINGS analysis (slower but more accurate)"
+        True,
+        help="Use comprehensive NODE_CLASS_MAPPINGS analysis (slower but more accurate)",
+    ),
+    use_comfyui_json: bool = typer.Option(
+        True,
+        help="Use comfyui-json library for better custom node resolution (recommended)",
     ),
     registry: str | None = typer.Option(None, help="Registry URL for pushing image"),
     models_path: str | None = typer.Option(
@@ -362,15 +380,19 @@ def build_workflow(
                     node_name = str(node)
                 custom_node_names.append(node_name)
                 console.print(f"  • {node_name}")
-            
+
             if not no_interactive:
-                console.print("\n[cyan]The workflow uses custom nodes that need to be installed.[/cyan]")
-                console.print("[cyan]You will be prompted to provide GitHub URLs for each custom node.[/cyan]\n")
-            
+                console.print(
+                    "\n[cyan]The workflow uses custom nodes that need to be installed.[/cyan]"
+                )
+                console.print(
+                    "[cyan]You will be prompted to provide GitHub URLs for each custom node.[/cyan]\n"
+                )
+
             # Don't use progress spinner during interactive prompts
             if not no_interactive:
                 console.print("[cyan]Resolving custom node repositories...[/cyan]")
-                
+
                 # Parse manual repository mappings
                 manual_repos = {}
                 if custom_node_repos:
@@ -382,23 +404,28 @@ def build_workflow(
                 # Initialize custom node installer with caching
                 cache_dir = output_dir / ".cache"
                 installer = CustomNodeInstaller(cache_dir=str(cache_dir))
-                
+
                 # Resolve repositories with hybrid approach
                 custom_node_metadata = installer.resolve_custom_node_repositories(
                     custom_nodes=dependencies["custom_nodes"],
                     manual_repos=manual_repos,
                     interactive=True,
-                    use_comprehensive_lookup=comprehensive_lookup
+                    use_comprehensive_lookup=comprehensive_lookup,
+                    use_comfyui_json=use_comfyui_json,
                 )
-                
-                console.print(f"\n[green]✓[/green] Resolved {len(custom_node_metadata)} custom node repositories")
+
+                console.print(
+                    f"\n[green]✓[/green] Resolved {len(custom_node_metadata)} custom node repositories"
+                )
             else:
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
                     console=console,
                 ) as progress:
-                    task = progress.add_task("Resolving custom node repositories...", total=None)
+                    task = progress.add_task(
+                        "Resolving custom node repositories...", total=None
+                    )
 
                     # Parse manual repository mappings
                     manual_repos = {}
@@ -411,17 +438,20 @@ def build_workflow(
                     # Initialize custom node installer with caching
                     cache_dir = output_dir / ".cache"
                     installer = CustomNodeInstaller(cache_dir=str(cache_dir))
-                    
+
                     # Resolve repositories with hybrid approach
                     custom_node_metadata = installer.resolve_custom_node_repositories(
                         custom_nodes=dependencies["custom_nodes"],
                         manual_repos=manual_repos,
                         interactive=False,
-                        use_comprehensive_lookup=comprehensive_lookup
+                        use_comprehensive_lookup=comprehensive_lookup,
+                        use_comfyui_json=use_comfyui_json,
                     )
 
                     progress.update(task, completed=True)
-                    console.print(f"\n[green]✓[/green] Resolved {len(custom_node_metadata)} custom node repositories")
+                    console.print(
+                        f"\n[green]✓[/green] Resolved {len(custom_node_metadata)} custom node repositories"
+                    )
 
             # Display dependencies table
             table = Table(title="Workflow Dependencies")
@@ -465,17 +495,25 @@ def build_workflow(
         # Step 5.5: Ask for models path if not provided and interactive mode
         if not models_path and not no_interactive and dependencies.get("models"):
             # Check if any models are required
-            has_models = any(len(models) > 0 for models in dependencies["models"].values())
-            
+            has_models = any(
+                len(models) > 0 for models in dependencies["models"].values()
+            )
+
             if has_models:
                 console.print("\n[bold yellow]Models Required:[/bold yellow]")
                 console.print("This workflow requires model files to run properly.")
-                console.print("\n[cyan]Please provide the path to your ComfyUI models folder.[/cyan]")
-                console.print("[cyan]This folder will be mounted as a volume in the Docker container.[/cyan]")
+                console.print(
+                    "\n[cyan]Please provide the path to your ComfyUI models folder.[/cyan]"
+                )
+                console.print(
+                    "[cyan]This folder will be mounted as a volume in the Docker container.[/cyan]"
+                )
                 console.print("\nExample: /home/username/ComfyUI/models")
-                console.print("(Press Enter to skip if you'll configure it manually later)")
+                console.print(
+                    "(Press Enter to skip if you'll configure it manually later)"
+                )
                 console.print("-" * 60)
-                
+
                 try:
                     user_input = input("Path to models folder: ").strip()
                     if user_input and Path(user_input).exists():
@@ -502,22 +540,40 @@ def build_workflow(
 
             # Detect if CUDA is available
             use_cuda = False
-            try:
-                import subprocess
-                result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
-                use_cuda = result.returncode == 0
-                if use_cuda:
-                    console.print("[green]✓ NVIDIA GPU detected - using CUDA[/green]")
-                else:
-                    console.print("[yellow]⚠ No NVIDIA GPU detected - using CPU[/yellow]")
-            except FileNotFoundError:
-                console.print("[yellow]⚠ nvidia-smi not found - using CPU[/yellow]")
+            import platform
+
+            # macOS doesn't support NVIDIA CUDA
+            if platform.system() == "Darwin":
+                console.print(
+                    "[yellow]⚠ macOS detected - using CPU (CUDA not supported)[/yellow]"
+                )
+                use_cuda = False
+            else:
+                try:
+                    import subprocess
+
+                    result = subprocess.run(
+                        ["nvidia-smi"], capture_output=True, text=True
+                    )
+                    use_cuda = result.returncode == 0
+                    if use_cuda:
+                        console.print(
+                            "[green]✓ NVIDIA GPU detected - using CUDA[/green]"
+                        )
+                    else:
+                        console.print(
+                            "[yellow]⚠ No NVIDIA GPU detected - using CPU[/yellow]"
+                        )
+                except FileNotFoundError:
+                    console.print("[yellow]⚠ nvidia-smi not found - using CPU[/yellow]")
 
             # Use the build_for_workflow method which handles everything
             dockerfile_content = dockerfile_builder.build_for_workflow(
                 dependencies=dependencies,
                 custom_nodes=custom_node_metadata,
-                base_image="nvidia/cuda:12.8.0-runtime-ubuntu22.04" if use_cuda else "python:3.11-slim",
+                base_image="nvidia/cuda:12.8.0-runtime-ubuntu22.04"
+                if use_cuda
+                else "python:3.11-slim",
                 use_cuda=use_cuda,
             )
             dockerfile_path = output_dir / "Dockerfile"
@@ -526,29 +582,34 @@ def build_workflow(
 
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Dockerfile generated: {dockerfile_path}")
-            
+
             # Save models path for docker run command
             if models_path:
                 docker_run_cmd_path = output_dir / "docker_run.sh"
                 with open(docker_run_cmd_path, "w") as f:
                     f.write("#!/bin/bash\n")
-                    f.write(f"# Docker run command with models volume mount\n")
-                    f.write(f"docker run -d \\\n")
-                    f.write(f"  --name comfyui-workflow \\\n")
-                    f.write(f"  -p 8188:8188 \\\n")
+                    f.write("# Docker run command with models volume mount\n")
+                    f.write("docker run -d \\\n")
+                    f.write("  --name comfyui-workflow \\\n")
+                    f.write("  -p 8188:8188 \\\n")
                     f.write(f"  -v {models_path}:/app/ComfyUI/models \\\n")
-                    if use_cuda:
-                        f.write(f"  --gpus all \\\n")
+                    # Only add GPU support if CUDA is available and not on macOS
+                    if use_cuda and platform.system() != "Darwin":
+                        f.write("  --gpus all \\\n")
                     f.write(f"  {image_name}:{tag}\n")
-                
+
                 docker_run_cmd_path.chmod(0o755)
-                console.print(f"[green]✓[/green] Docker run script saved: {docker_run_cmd_path}")
-                console.print(f"[cyan]Run the container with: ./build-test/docker_run.sh[/cyan]")
+                console.print(
+                    f"[green]✓[/green] Docker run script saved: {docker_run_cmd_path}"
+                )
+                console.print(
+                    "[cyan]Run the container with: ./build-test/docker_run.sh[/cyan]"
+                )
 
         # Extract API parameters for database storage
         api_generator = WorkflowAPIGenerator()
         parameters = api_generator.extract_input_parameters(workflow_data)
-        
+
         # Convert parameters to JSON-serializable format
         param_list = []
         for p in parameters:
@@ -566,40 +627,58 @@ def build_workflow(
             if p.enum:
                 param_dict["enum"] = p.enum
             param_list.append(param_dict)
-        
+
         # Save workflow and build info to database
-        db = get_database()
+        # Initialize database with automatic table creation
+        try:
+            # Import models to ensure they're registered with SQLModel
+            db = init_db(create_tables=True)
+        except Exception as e:
+            logger.warning(f"Database initialization warning: {e}")
+            # Fallback to get_database if init_db fails
+            db = get_database()
+
         workflow_id = None
-        
+
         with db.get_session() as session:
             workflow_repo = WorkflowRepository(session)
-            
+
             # Convert dependencies for database storage
             dependencies_for_db = dependencies.copy()
             if isinstance(dependencies_for_db.get("custom_nodes"), set):
-                dependencies_for_db["custom_nodes"] = list(dependencies_for_db["custom_nodes"])
+                dependencies_for_db["custom_nodes"] = list(
+                    dependencies_for_db["custom_nodes"]
+                )
             if isinstance(dependencies_for_db.get("python_packages"), set):
-                dependencies_for_db["python_packages"] = list(dependencies_for_db["python_packages"])
+                dependencies_for_db["python_packages"] = list(
+                    dependencies_for_db["python_packages"]
+                )
             for key in dependencies_for_db.get("models", {}):
                 if isinstance(dependencies_for_db["models"][key], set):
-                    dependencies_for_db["models"][key] = list(dependencies_for_db["models"][key])
-            
+                    dependencies_for_db["models"][key] = list(
+                        dependencies_for_db["models"][key]
+                    )
+
             # Check if workflow exists or create new
             existing = workflow_repo.get_by_name(workflow_path.stem)
             if existing:
                 workflow_id = existing.id
-                console.print(f"[cyan]Using existing workflow from database: {workflow_id[:8]}[/cyan]")
+                console.print(
+                    f"[cyan]Using existing workflow from database: {workflow_id[:8]}[/cyan]"
+                )
             else:
                 workflow = workflow_repo.create(
                     name=workflow_path.stem,
                     definition=workflow_data,
                     dependencies=dependencies_for_db,
                     parameters=param_list,
-                    description=f"Auto-saved from build-workflow command"
+                    description="Auto-saved from build-workflow command",
                 )
                 workflow_id = workflow.id
-                console.print(f"[green]Workflow saved to database: {workflow_id[:8]}[/green]")
-        
+                console.print(
+                    f"[green]Workflow saved to database: {workflow_id[:8]}[/green]"
+                )
+
         # Step 7: Build Docker image (if requested)
         if build_image:
             with Progress(
@@ -612,36 +691,38 @@ def build_workflow(
                 build_id = None
                 try:
                     docker_manager = DockerManager()
-                    
+
                     # Create build record in database
                     with db.get_session() as session:
                         build_repo = BuildRepository(session)
-                        
+
                         # Read Dockerfile content for tracking
                         with open(dockerfile_path) as f:
                             dockerfile_for_db = f.read()
-                        
+
                         build = build_repo.create_build(
                             workflow_id=workflow_id,
                             image_name=image_name,
                             tag=tag,
-                            dockerfile=dockerfile_for_db
+                            dockerfile=dockerfile_for_db,
                         )
                         build_id = build.id
-                        console.print(f"[cyan]Build tracked in database: {build_id[:8]}[/cyan]")
+                        console.print(
+                            f"[cyan]Build tracked in database: {build_id[:8]}[/cyan]"
+                        )
 
                     # Check if Docker is available
                     if not docker_manager.is_available():
                         console.print("[red]✗ Docker is not available[/red]")
                         console.print("Please ensure Docker daemon is running")
-                        
+
                         # Update build status as failed
                         with db.get_session() as session:
                             build_repo = BuildRepository(session)
                             build_repo.update_build_status(
                                 build_id,
                                 status="failed",
-                                error="Docker daemon not available"
+                                error="Docker daemon not available",
                             )
                         raise typer.Exit(1)
 
@@ -665,7 +746,7 @@ def build_workflow(
                         console.print(
                             f"[green]✓[/green] Docker image built: {full_image_name}"
                         )
-                        
+
                         # Update build status as successful
                         with db.get_session() as session:
                             build_repo = BuildRepository(session)
@@ -673,7 +754,7 @@ def build_workflow(
                                 build_id,
                                 status="success",
                                 logs="Build completed successfully",
-                                image_size=2500000000  # TODO: Get actual image size
+                                image_size=2500000000,  # TODO: Get actual image size
                             )
 
                         # Push to registry if requested
@@ -691,17 +772,15 @@ def build_workflow(
 
                 except Exception as e:
                     console.print(f"[red]✗ Docker build failed: {e}[/red]")
-                    
+
                     # Update build status as failed
                     if build_id:
                         with db.get_session() as session:
                             build_repo = BuildRepository(session)
                             build_repo.update_build_status(
-                                build_id,
-                                status="failed",
-                                error=str(e)
+                                build_id, status="failed", error=str(e)
                             )
-                    
+
                     raise typer.Exit(1) from e
 
         # Step 7: Generate API configuration and documentation
@@ -710,7 +789,9 @@ def build_workflow(
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Generating API configuration and documentation...", total=None)
+            task = progress.add_task(
+                "Generating API configuration and documentation...", total=None
+            )
 
             # API config already generated earlier
             api_config = api_generator.generate_endpoint_config(workflow_data)
@@ -718,7 +799,6 @@ def build_workflow(
             # Save API configuration
             api_config_path = output_dir / "api_config.json"
             with open(api_config_path, "w") as f:
-
                 json.dump(
                     {
                         "endpoint": api_config.path,
@@ -732,18 +812,19 @@ def build_workflow(
 
             # Generate OpenAPI specification
             from src.api.openapi_generator import OpenAPIGenerator
+
             openapi_gen = OpenAPIGenerator()
-            
+
             openapi_spec = openapi_gen.generate_full_spec(
                 title=f"ComfyUI Workflow API - {workflow_path.stem}",
                 version="1.0.0",
-                workflows={workflow_path.stem: workflow_data}
+                workflows={workflow_path.stem: workflow_data},
             )
-            
+
             # Save OpenAPI spec
             openapi_path = output_dir / "openapi.json"
             openapi_gen.save_spec(openapi_spec, str(openapi_path))
-            
+
             # Generate HTML documentation
             html_doc = generate_html_documentation(
                 workflow_name=workflow_path.stem,
@@ -751,9 +832,10 @@ def build_workflow(
                 dependencies=dependencies,
                 custom_nodes=custom_node_metadata,
                 docker_image=f"{image_name}:{tag}",
-                models_path=models_path
+                models_path=models_path,
+                use_cuda=use_cuda,
             )
-            
+
             # Save HTML documentation
             doc_path = output_dir / "documentation.html"
             with open(doc_path, "w") as f:
@@ -763,12 +845,8 @@ def build_workflow(
             console.print(
                 f"[green]✓[/green] API configuration saved: {api_config_path}"
             )
-            console.print(
-                f"[green]✓[/green] OpenAPI spec saved: {openapi_path}"
-            )
-            console.print(
-                f"[green]✓[/green] HTML documentation saved: {doc_path}"
-            )
+            console.print(f"[green]✓[/green] OpenAPI spec saved: {openapi_path}")
+            console.print(f"[green]✓[/green] HTML documentation saved: {doc_path}")
             console.print(
                 f"[cyan]View documentation: file://{doc_path.absolute()}[/cyan]"
             )
@@ -903,23 +981,29 @@ def save_workflow(
     workflow_path: Path = typer.Argument(
         ..., help="Path to ComfyUI workflow JSON file"
     ),
-    name: Optional[str] = typer.Option(None, help="Workflow name (defaults to filename)"),
-    description: Optional[str] = typer.Option(None, help="Workflow description"),
+    name: str | None = typer.Option(None, help="Workflow name (defaults to filename)"),
+    description: str | None = typer.Option(None, help="Workflow description"),
 ):
     """Save a workflow to the database."""
     console.print(f"[bold blue]Saving workflow:[/bold blue] {workflow_path}")
-    
+
     try:
-        # Initialize database
-        db = init_db()
-        
+        # Initialize database with automatic table creation
+        try:
+            # Import models to ensure they're registered with SQLModel
+            db = init_db(create_tables=True)
+        except Exception as e:
+            logger.warning(f"Database initialization warning: {e}")
+            # Fallback to get_database if init_db fails
+            db = get_database()
+
         with open(workflow_path) as f:
             workflow_data = json.load(f)
-        
+
         # Extract dependencies and parameters
         extractor = DependencyExtractor()
         dependencies = extractor.extract_all(workflow_data)
-        
+
         # Convert sets to lists for JSON serialization
         if isinstance(dependencies.get("custom_nodes"), set):
             dependencies["custom_nodes"] = list(dependencies["custom_nodes"])
@@ -928,20 +1012,20 @@ def save_workflow(
         for key in dependencies.get("models", {}):
             if isinstance(dependencies["models"][key], set):
                 dependencies["models"][key] = list(dependencies["models"][key])
-        
+
         api_generator = WorkflowAPIGenerator()
         parameters = api_generator.extract_input_parameters(workflow_data)
         param_dicts = [
             {
                 "name": p.name,
-                "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
+                "type": p.type.value if hasattr(p.type, "value") else str(p.type),
                 "default": p.default,
                 "required": p.required,
-                "description": p.description
+                "description": p.description,
             }
             for p in parameters
         ]
-        
+
         # Save to database
         with db.get_session() as session:
             repo = WorkflowRepository(session)
@@ -950,13 +1034,13 @@ def save_workflow(
                 definition=workflow_data,
                 dependencies=dependencies,
                 parameters=param_dicts,
-                description=description
+                description=description,
             )
-            
+
         console.print(f"[green]✓ Workflow saved with ID: {workflow.id}[/green]")
         console.print(f"  Name: {workflow.name}")
         console.print(f"  Version: {workflow.version}")
-        
+
     except Exception as e:
         console.print(f"[red]Error saving workflow: {e}[/red]")
         raise typer.Exit(1) from e
@@ -965,42 +1049,52 @@ def save_workflow(
 @app.command()
 def list_workflows(
     limit: int = typer.Option(10, help="Maximum number of workflows to show"),
-    name_filter: Optional[str] = typer.Option(None, help="Filter by name"),
+    name_filter: str | None = typer.Option(None, help="Filter by name"),
 ):
     """List saved workflows from the database."""
     try:
-        db = get_database()
-        
+        # Initialize database with automatic table creation
+        try:
+            # Import models to ensure they're registered with SQLModel
+            db = init_db(create_tables=True)
+        except Exception as e:
+            logger.warning(f"Database initialization warning: {e}")
+            # Fallback to get_database if init_db fails
+            db = get_database()
+
         with db.get_session() as session:
             repo = WorkflowRepository(session)
             workflows = repo.list(limit=limit, name_filter=name_filter)
-            
+
         if not workflows:
             console.print("[yellow]No workflows found[/yellow]")
             return
-            
+
         # Create table
         from rich.table import Table
+
         table = Table(title="Saved Workflows")
         table.add_column("ID", style="cyan")
         table.add_column("Name", style="green")
         table.add_column("Version")
         table.add_column("Nodes")
         table.add_column("Created", style="yellow")
-        
+
         for workflow in workflows:
-            node_count = len(workflow.definition) if isinstance(workflow.definition, dict) else 0
+            node_count = (
+                len(workflow.definition) if isinstance(workflow.definition, dict) else 0
+            )
             created = workflow.created_at.strftime("%Y-%m-%d %H:%M")
             table.add_row(
                 workflow.id[:8],
                 workflow.name,
                 str(workflow.version),
                 str(node_count),
-                created
+                created,
             )
-        
+
         console.print(table)
-        
+
     except Exception as e:
         console.print(f"[red]Error listing workflows: {e}[/red]")
         raise typer.Exit(1) from e
@@ -1008,23 +1102,24 @@ def list_workflows(
 
 @app.command()
 def build_history(
-    workflow_id: Optional[str] = typer.Option(None, help="Filter by workflow ID"),
+    workflow_id: str | None = typer.Option(None, help="Filter by workflow ID"),
     limit: int = typer.Option(10, help="Maximum number of builds to show"),
 ):
     """Show container build history."""
     try:
         db = get_database()
-        
+
         with db.get_session() as session:
             build_repo = BuildRepository(session)
             builds = build_repo.get_build_history(workflow_id=workflow_id, limit=limit)
-            
+
         if not builds:
             console.print("[yellow]No builds found[/yellow]")
             return
-            
+
         # Create table
         from rich.table import Table
+
         table = Table(title="Container Build History")
         table.add_column("Build ID", style="cyan")
         table.add_column("Workflow", style="green")
@@ -1032,29 +1127,29 @@ def build_history(
         table.add_column("Status")
         table.add_column("Duration")
         table.add_column("Created", style="yellow")
-        
+
         for build in builds:
             status_color = {
                 "success": "green",
                 "failed": "red",
                 "building": "yellow",
-                "pending": "blue"
+                "pending": "blue",
             }.get(build.build_status, "white")
-            
+
             duration = f"{build.build_duration:.1f}s" if build.build_duration else "-"
             created = build.created_at.strftime("%Y-%m-%d %H:%M")
-            
+
             table.add_row(
                 build.id[:8],
                 build.workflow_id[:8],
                 f"{build.image_name}:{build.tag}",
                 f"[{status_color}]{build.build_status}[/{status_color}]",
                 duration,
-                created
+                created,
             )
-        
+
         console.print(table)
-        
+
     except Exception as e:
         console.print(f"[red]Error getting build history: {e}[/red]")
         raise typer.Exit(1) from e
@@ -1073,20 +1168,22 @@ def version():
 def api(
     host: str = typer.Option("0.0.0.0", "--host", help="API server host"),
     port: int = typer.Option(8000, "--port", help="API server port"),
-    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload for development")
+    reload: bool = typer.Option(
+        False, "--reload", help="Enable auto-reload for development"
+    ),
 ):
     """Start the FastAPI server for workflow management."""
     import uvicorn
-    
+
     console.print(f"[bold green]Starting API server on {host}:{port}[/bold green]")
     console.print("[yellow]Press CTRL+C to stop[/yellow]")
-    
+
     uvicorn.run(
         "src.api.workflow_api:app",
         host=host,
         port=port,
         reload=reload,
-        log_level="info"
+        log_level="info",
     )
 
 
