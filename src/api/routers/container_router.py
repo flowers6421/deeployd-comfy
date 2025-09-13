@@ -21,7 +21,6 @@ from src.containers.docker_manager import DockerBuildError, DockerManager
 from src.containers.dockerfile_builder import DockerfileBuilder
 from src.db.database import init_db
 from src.db.repositories import BuildRepository, WorkflowRepository
-from src.db.repositories import SessionLike as RepoSessionLike
 
 router = APIRouter()
 
@@ -29,10 +28,10 @@ router = APIRouter()
 db = init_db()
 
 
-def get_session() -> t.Generator[RepoSessionLike, None, None]:
+def get_session() -> t.Generator[Any, None, None]:
     """Yield a database session for request lifetime."""
     with db.get_session() as session:
-        yield t.cast(RepoSessionLike, session)
+        yield session
 
 
 class ManualNode(BaseModel):  # type: ignore[no-any-unimported]
@@ -215,7 +214,7 @@ def _run_docker_build(
 
     # Mark as building
     with local_db.get_session() as session:
-        BuildRepository(t.cast(RepoSessionLike, session)).update_build_status(
+        BuildRepository(session).update_build_status(
             build_id, status="building", logs="Starting build..."
         )
     try:
@@ -230,7 +229,7 @@ def _run_docker_build(
     # Check Docker availability
     if not docker_manager.is_available():
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).update_build_status(
+            BuildRepository(session).update_build_status(
                 build_id, status="failed", logs="ERROR: Docker daemon not available"
             )
         try:
@@ -248,11 +247,11 @@ def _run_docker_build(
 
     # Prepare temp build context and Dockerfile
     with local_db.get_session() as session:
-        wrepo = WorkflowRepository(t.cast(RepoSessionLike, session))
+        wrepo = WorkflowRepository(session)
         wf = wrepo.get(workflow_id)
         if not wf:
             with local_db.get_session() as s2:
-                BuildRepository(t.cast(RepoSessionLike, s2)).update_build_status(
+                BuildRepository(s2).update_build_status(
                     build_id, status="failed", logs="Workflow not found"
                 )
             return
@@ -301,7 +300,7 @@ def _run_docker_build(
             )
         # Persist resolved nodes for audit
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).set_resolved_nodes(
+            BuildRepository(session).set_resolved_nodes(
                 build_id,
                 [
                     {
@@ -328,7 +327,7 @@ def _run_docker_build(
             pass
 
     # Build manual NodeMetadata list
-    extra_nodes: list[NodeMetadata] = []
+    extra_nodes: list[Any] = []
     for mn in manual_nodes or []:
         if not mn.repository:
             continue
@@ -341,7 +340,7 @@ def _run_docker_build(
         resolved_nodes = (resolved_nodes or []) + extra_nodes
         # Update persisted list to include extras as well
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).set_resolved_nodes(
+            BuildRepository(session).set_resolved_nodes(
                 build_id,
                 [
                     {
@@ -373,7 +372,7 @@ def _run_docker_build(
     except Exception as e:
         # Fail fast if Dockerfile generation fails
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).update_build_status(
+            BuildRepository(session).update_build_status(
                 build_id, status="failed", logs=f"ERROR generating Dockerfile: {e}"
             )
         try:
@@ -397,18 +396,13 @@ def _run_docker_build(
             tag=full_tag,
             use_cache=not no_cache,
         ):
-            line = None
-            if isinstance(chunk, dict):
-                line = chunk.get("stream") or chunk.get("status") or ""
-            else:
-                line = str(chunk)
+            # chunks are decoded dicts from Docker build API
+            line = chunk.get("stream") or chunk.get("status") or ""
             line = line.rstrip("\n")
             if not line:
                 continue
             with local_db.get_session() as session:
-                BuildRepository(t.cast(RepoSessionLike, session)).append_build_log(
-                    build_id, line
-                )
+                BuildRepository(session).append_build_log(build_id, line)
             try:
                 import anyio
 
@@ -421,7 +415,7 @@ def _run_docker_build(
         # Success
         size = docker_manager.get_image_size(full_tag)
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).update_build_status(
+            BuildRepository(session).update_build_status(
                 build_id,
                 status="success",
                 logs="Build completed successfully",
@@ -440,7 +434,7 @@ def _run_docker_build(
             pass
     except DockerBuildError as e:
         with local_db.get_session() as session:
-            BuildRepository(t.cast(RepoSessionLike, session)).update_build_status(
+            BuildRepository(session).update_build_status(
                 build_id, status="failed", logs=f"ERROR: {e}"
             )
         try:
@@ -512,8 +506,26 @@ async def verify_custom_nodes(
             "print(json.dumps(sorted([x for x in os.listdir(d) if os.path.isdir(os.path.join(d,x))])))\n"
             "PY"
         )
+        # Add GPU support if available
+        device_requests = []
+        try:  # best-effort; continue without GPU if unavailable
+            import docker
+
+            runtimes = t.cast(dict[str, t.Any], client.info().get("Runtimes", {}))
+            if "nvidia" in runtimes:
+                device_requests = [
+                    docker.types.DeviceRequest(
+                        device_ids=["all"], capabilities=[["gpu"]]
+                    )
+                ]
+        except Exception:
+            pass
+
         output: bytes = client.containers.run(
-            image=image, command=["bash", "-lc", cmd], remove=True
+            image=image,
+            command=["bash", "-lc", cmd],
+            remove=True,
+            device_requests=device_requests,
         )
         listing = json.loads(output.decode().strip() or "[]")
     except Exception as e:

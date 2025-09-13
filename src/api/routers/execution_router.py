@@ -4,6 +4,7 @@ Integrates with ComfyUI via the WorkflowExecutor when creating executions.
 """
 
 import asyncio
+import logging
 import os
 import threading
 import typing as t
@@ -22,14 +23,15 @@ from src.db.repositories import (
     ExecutionRepository,
     WorkflowRepository,
 )
-from src.db.repositories import (
-    SessionLike as RepoSessionLike,
-)
 from src.workflows.converter import WorkflowConverter
 
 router = APIRouter()
 
 db = init_db()
+
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 def get_session() -> t.Generator[Any, None, None]:
@@ -45,7 +47,7 @@ async def list_executions(
 ) -> list[Any]:
     """List recent workflow executions."""
     repo = ExecutionRepository(session)
-    return repo.list(limit=limit)
+    return t.cast(list[Any], repo.list(limit=limit))
 
 
 class ExecutionCreateRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -108,9 +110,7 @@ async def create_execution(
             )
             # Load workflow fresh inside this thread to avoid detached instance
             with local_db.get_session() as s1:
-                wf_obj = WorkflowRepository(t.cast(RepoSessionLike, s1)).get(
-                    payload.workflow_id
-                )
+                wf_obj = WorkflowRepository(s1).get(payload.workflow_id)
                 if not wf_obj:
                     raise RuntimeError("Workflow not found")
                 wf_def_raw = wf_obj.definition or {}
@@ -130,7 +130,7 @@ async def create_execution(
 
             # Update execution as running -> completed/failed
             with local_db.get_session() as s2:
-                erepo = ExecutionRepository(t.cast(RepoSessionLike, s2))
+                erepo = ExecutionRepository(s2)
                 current = erepo.get(execution.id)
                 if not current:
                     return
@@ -168,7 +168,7 @@ async def create_execution(
                 et = result.get("time") or result.get("execution_time")
                 with suppress(Exception):
                     current.execution_time = float(et) if et is not None else None
-                s2r = t.cast(RepoSessionLike, s2)
+                s2r = s2
                 s2r.add(current)
                 s2r.commit()
                 s2r.refresh(current)
@@ -186,7 +186,7 @@ async def create_execution(
                     pass
         except Exception as e:  # update as failed
             with local_db.get_session() as s2:
-                erepo = ExecutionRepository(t.cast(RepoSessionLike, s2))
+                erepo = ExecutionRepository(s2)
                 current = erepo.get(execution.id)
                 if not current:
                     return
@@ -195,7 +195,7 @@ async def create_execution(
                 from datetime import datetime as _dt
 
                 current.completed_at = _dt.utcnow()
-                s2r = t.cast(RepoSessionLike, s2)
+                s2r = s2
                 s2r.add(current)
                 s2r.commit()
                 try:
@@ -286,11 +286,27 @@ def _ensure_comfy_service(local_db: Any, workflow_id: str) -> str:
         image = desired_image
         # Bind to random free host port
         ports = {"8188/tcp": ("127.0.0.1", None)}
+        # Add GPU support if available
+        device_requests = []
+        try:  # best-effort; continue without GPU if unavailable
+            import docker
+
+            runtimes = t.cast(dict[str, t.Any], client.info().get("Runtimes", {}))
+            if "nvidia" in runtimes:
+                device_requests = [
+                    docker.types.DeviceRequest(
+                        device_ids=["all"], capabilities=[["gpu"]]
+                    )
+                ]
+        except Exception:
+            pass
+
         container = client.containers.run(
             image=image,
             detach=True,
             labels={label_key: label_val},
             ports=ports,
+            device_requests=device_requests,
         )
 
         # Stop and remove any other stale containers for this workflow

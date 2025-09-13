@@ -5,9 +5,19 @@ import logging
 import subprocess
 import typing as t
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from src.containers.custom_node_installer import NodeMetadata
+
+
+class NodeMetadataLike(Protocol):
+    """Structural type for NodeMetadata used by resolver outputs."""
+
+    name: str
+    repository: str
+    commit_hash: str | None
+    python_dependencies: list[str]
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,26 +53,32 @@ class ComfyUIJsonResolver:
                 "Please install Node.js: https://nodejs.org/"
             ) from e
 
-        # Ensure we can load vendored comfyui-json via the node bridge
-        # Test if the node_bridge.js can be executed successfully
+        # Quick sanity check for Node bridge availability (non-fatal)
         try:
             bridge_dir = str(self.node_bridge_path.parent)
-            test_cmd = ["node", str(self.node_bridge_path)]
             result = subprocess.run(
-                test_cmd,
+                ["node", str(self.node_bridge_path)],
                 capture_output=True,
                 text=True,
                 cwd=bridge_dir,
             )
-            # The script should output usage information if it loads successfully
-            if result.returncode != 1 or "Commands:" not in result.stderr:
+            # Expect usage text on stderr/stdout with exit code 1 when no args are passed
+            stderr = result.stderr or ""
+            stdout = result.stdout or ""
+            has_usage = (
+                ("Usage:" in stderr)
+                or ("Usage:" in stdout)
+                or ("Commands:" in stderr)
+                or ("Commands:" in stdout)
+            )
+            if result.returncode != 1 or not has_usage:
                 logger.warning(
-                    f"Node bridge may not be working correctly: {result.stderr or result.stdout}"
+                    "Node bridge did not emit expected usage output; proceeding anyway.\n"
+                    f"stdout: {stdout}\nstderr: {stderr}"
                 )
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.warning(
-                f"Could not verify node bridge setup: {e}. "
-                "Resolution may fail if comfyui-json is not properly installed."
+                "Unable to run node bridge for comfyui-json; resolution may fail: %s", e
             )
 
     # Note: intentionally not loading local known mappings. We rely on
@@ -178,7 +194,7 @@ class ComfyUIJsonResolver:
 
     def convert_to_node_metadata(
         self, resolved_nodes: dict[str, dict[str, Any]]
-    ) -> list[NodeMetadata]:
+    ) -> list[NodeMetadataLike]:
         """Convert resolved node data to NodeMetadata objects.
 
         Args:
@@ -218,7 +234,7 @@ class ComfyUIJsonResolver:
 
     def resolve_custom_nodes_from_workflow(
         self, workflow_data: dict[str, Any], manual_repos: dict[str, str] | None = None
-    ) -> tuple[list[NodeMetadata], list[str]]:
+    ) -> tuple[list[NodeMetadataLike], list[str]]:
         """Resolve custom nodes from workflow data.
 
         Args:

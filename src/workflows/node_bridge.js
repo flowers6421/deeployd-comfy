@@ -26,22 +26,28 @@ async function loadComfyJson() {
     const vendorPath = path.join(__dirname, 'vendor', 'comfyui-json', 'dist', 'index.js');
     try {
         if (fs.existsSync(vendorPath)) {
-            // Use dynamic import for ES modules
+            // Vendored library is ESM; use dynamic import via file URL
             const fileUrl = `file://${vendorPath}`;
             const mod = await import(fileUrl);
             return mod;
         }
     } catch (err) {
-        console.error(`Failed to load vendored comfyui-json: ${err.message}`);
+        console.error(`Failed to load vendored comfyui-json: ${(err && err.message) || String(err)}`);
         // Continue to fallback attempts below
     }
-    
+
     try {
-        // Try to import from node_modules
+        // Try to import from node_modules (ESM)
         const mod = await import('comfyui-json');
         return mod;
     } catch (e) {
-        throw new Error(`comfyui-json not available: ${(e && e.message) || String(e)}`);
+        // Last resort, try CJS require if a compat build exists
+        try {
+            // eslint-disable-next-line global-require, import/no-unresolved
+            return require('comfyui-json');
+        } catch (err2) {
+            throw new Error(`comfyui-json not available: ${(e && e.message) || String(e)}`);
+        }
     }
 }
 

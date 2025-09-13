@@ -133,16 +133,27 @@ class WorkflowConverter:
             if isinstance(node, dict) and isinstance(node.get("id"), int):
                 node_map[int(node["id"])] = node
 
-        # Detect simple pass-through nodes like Reroute and precompute their upstream source
+        # Detect simple pass-through nodes like Reroute/GetNode (including vendor variants)
+        # and precompute their upstream source
         # In UI format, Reroute has a single input and a single output, but ComfyUI server
         # has no executable "Reroute" class; prompts containing it will fail.
         # We flatten Reroute by reconnecting its consumers to the Reroute's upstream source.
-        reroute_upstream: dict[int, tuple[int, int]] = {}
+        passthrough_upstream: dict[int, tuple[int, int]] = {}
+
+        def _is_ui_passthrough(node_type: str) -> bool:
+            t = (node_type or "").strip().lower()
+            # Handle names like "Reroute", "Reroute (rgthree)", "GetNode", "Get Node" etc.
+            return (
+                t.startswith("reroute")
+                or t.startswith("getnode")
+                or t.startswith("get node")
+            )
+
         try:
             for node in ui_workflow.get("nodes", []) or []:
                 if not isinstance(node, dict):
                     continue
-                if str(node.get("type")) != "Reroute":
+                if not _is_ui_passthrough(str(node.get("type"))):
                     continue
                 nid = node.get("id")
                 if not isinstance(nid, int):
@@ -153,7 +164,7 @@ class WorkflowConverter:
                     if isinstance(input_config, dict):
                         link_id = input_config.get("link")
                         if link_id is not None and link_id in link_map:
-                            reroute_upstream[nid] = link_map[link_id]
+                            passthrough_upstream[nid] = link_map[link_id]
                             break
         except Exception:
             # Non-fatal; if anything goes wrong we just won't flatten
@@ -188,8 +199,11 @@ class WorkflowConverter:
                 logger.warning(f"Node {node_id} has no type field")
                 continue
 
-            # Skip UI-only helpers like Reroute or TextInput_ in the API prompt
-            if class_type in ("Reroute", "TextInput_", "ShowText|pysssss"):
+            # Skip UI-only helpers like Reroute/GetNode variants or TextInput_ in the API prompt
+            if _is_ui_passthrough(class_type) or class_type in (
+                "TextInput_",
+                "ShowText|pysssss",
+            ):
                 continue
 
             # Build API node
@@ -205,15 +219,15 @@ class WorkflowConverter:
                         if link_id is not None and link_id in link_map:
                             # This input is connected to another node
                             source_node, source_slot = link_map[link_id]
-                            # Flatten chains of Reroute nodes if present
+                            # Flatten chains of passthrough nodes if present
                             visited: set[int] = set()
                             while (
                                 isinstance(source_node, int)
-                                and source_node in reroute_upstream
+                                and source_node in passthrough_upstream
                                 and source_node not in visited
                             ):
                                 visited.add(source_node)
-                                upstream = reroute_upstream.get(source_node)
+                                upstream = passthrough_upstream.get(source_node)
                                 if upstream is None:
                                     break
                                 source_node, source_slot = upstream
