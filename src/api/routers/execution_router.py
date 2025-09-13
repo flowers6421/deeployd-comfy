@@ -4,6 +4,7 @@ Integrates with ComfyUI via the WorkflowExecutor when creating executions.
 """
 
 import asyncio
+import logging
 import os
 import threading
 import typing as t
@@ -27,6 +28,10 @@ from src.workflows.converter import WorkflowConverter
 router = APIRouter()
 
 db = init_db()
+
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 def get_session() -> t.Generator[Any, None, None]:
