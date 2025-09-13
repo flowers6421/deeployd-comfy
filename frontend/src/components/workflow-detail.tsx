@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { WorkflowAPIConfig } from './workflow-api-config';
 
 interface WorkflowDetailProps {
   workflow: Workflow;
@@ -22,7 +23,7 @@ interface WorkflowDetailProps {
 export function WorkflowDetail({ workflow, open, onClose }: WorkflowDetailProps) {
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[80vh]">
+      <DialogContent className="max-w-5xl w-[1000px] max-h-[85vh]">
         <DialogHeader>
           <DialogTitle>{workflow.name}</DialogTitle>
           <DialogDescription>
@@ -31,11 +32,12 @@ export function WorkflowDetail({ workflow, open, onClose }: WorkflowDetailProps)
         </DialogHeader>
 
         <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="definition">Definition</TabsTrigger>
-            <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
-            <TabsTrigger value="parameters">Parameters</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-5 gap-2">
+            <TabsTrigger className="py-2 text-sm" value="overview">Overview</TabsTrigger>
+            <TabsTrigger className="py-2 text-sm" value="definition">Definition</TabsTrigger>
+            <TabsTrigger className="py-2 text-sm" value="dependencies">Dependencies</TabsTrigger>
+            <TabsTrigger className="py-2 text-sm" value="parameters">Parameters</TabsTrigger>
+            <TabsTrigger className="py-2 text-sm" value="api">API</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
@@ -83,9 +85,27 @@ export function WorkflowDetail({ workflow, open, onClose }: WorkflowDetailProps)
               <div>
                 <h4 className="font-medium mb-2">Custom Nodes</h4>
                 <div className="flex flex-wrap gap-2">
-                  {workflow.dependencies.custom_nodes.map((node) => (
-                    <Badge key={node} variant="secondary">{node}</Badge>
-                  ))}
+                  {workflow.dependencies.custom_nodes.map((node, idx: number) => {
+                    const label = typeof node === 'string'
+                      ? node
+                      : (() => {
+                          const obj = node as Record<string, unknown>
+                          const repo = typeof obj.repository === 'string' ? obj.repository : undefined
+                          const cls = typeof obj.class_type === 'string' ? obj.class_type : undefined
+                          return repo ? repo.split('/').slice(-1)[0].replace(/\.git$/, '') : (cls || JSON.stringify(obj))
+                        })();
+                    const key = typeof node === 'string'
+                      ? `str:${node}`
+                      : (() => {
+                          const obj = node as Record<string, unknown>
+                          const repo = typeof obj.repository === 'string' ? obj.repository : undefined
+                          const cls = typeof obj.class_type === 'string' ? obj.class_type : undefined
+                          return repo ? `repo:${repo}` : (cls ? `cls:${cls}` : `idx:${idx}`)
+                        })();
+                    return (
+                      <Badge key={key} variant="secondary">{label}</Badge>
+                    )
+                  })}
                 </div>
               </div>
             )}
@@ -168,6 +188,10 @@ export function WorkflowDetail({ workflow, open, onClose }: WorkflowDetailProps)
                 ))}
               </div>
             </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="api">
+            <WorkflowAPIConfig workflowId={workflow.id} />
           </TabsContent>
         </Tabs>
 

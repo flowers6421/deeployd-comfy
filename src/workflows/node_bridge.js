@@ -6,10 +6,154 @@
 
 const fs = require('fs');
 const path = require('path');
-const { generateDependencyGraph, generateDependencyGraphJson } = require('comfyui-json');
+
+// Ensure we always return JSON even on unexpected crashes
+process.on('uncaughtException', (err) => {
+  try {
+    console.log(JSON.stringify({ success: false, error: err && err.message, stack: err && err.stack }));
+  } catch {}
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  try {
+    const msg = (reason && reason.message) || String(reason);
+    console.log(JSON.stringify({ success: false, error: msg }));
+  } catch {}
+  process.exit(1);
+});
+
+async function loadComfyJson() {
+    const vendorPath = path.join(__dirname, 'vendor', 'comfyui-json', 'dist', 'index.js');
+    try {
+        if (fs.existsSync(vendorPath)) {
+            // Load vendored comfyui-json first (no external install required)
+            // eslint-disable-next-line global-require, import/no-unresolved
+            return require(vendorPath);
+        }
+    } catch (_) {
+        // Continue to fallback attempts below
+    }
+    try {
+        // Prefer CJS require when available
+        // eslint-disable-next-line global-require, import/no-unresolved
+        return require('comfyui-json');
+    } catch (e) {
+        try {
+            // Fallback to dynamic ESM import
+            const mod = await import('comfyui-json');
+            return mod;
+        } catch (err) {
+            throw new Error(`comfyui-json not available: ${(err && err.message) || String(err)}`);
+        }
+    }
+}
+
+function hasGlobalFetch() {
+    try { return typeof fetch === 'function'; } catch { return false; }
+}
+
+async function fetchUrl(url) {
+    if (hasGlobalFetch()) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+        return res.json();
+    }
+    // Minimal https JSON fetch fallback
+    const https = require('https');
+    return new Promise((resolve, reject) => {
+        https.get(url, (resp) => {
+            let data = '';
+            resp.on('data', (chunk) => { data += chunk; });
+            resp.on('end', () => {
+                try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+            });
+        }).on('error', reject);
+    });
+}
+
+// Ensure global.fetch exists and inject overlays for Manager maps
+function ensureGlobalFetchWithOverlay() {
+    const EXT_MAP_URL = 'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json';
+
+    // Overlay additions for missing or newly-introduced nodes
+    const overlayEntries = {
+        // Map the specific UI node "easy seed_seed" to Custom-Scripts pack
+        'https://github.com/pythongosssss/ComfyUI-Custom-Scripts': [
+            [],
+            {
+                title: 'ComfyUI-Custom-Scripts',
+                title_aux: 'Custom-Scripts',
+                // Be precise to avoid conflicts with Easy-Use pack (e.g., 'easy seed')
+                nodename_pattern: '^easy\\sseed_seed$'
+            }
+        ]
+    };
+
+    function applyOverlay(map) {
+        try {
+            for (const [url, data] of Object.entries(overlayEntries)) {
+                map[url] = data;
+            }
+        } catch (_) {}
+        return map;
+    }
+
+    // If no global fetch, polyfill with overlay support
+    if (!hasGlobalFetch()) {
+        const https = require('https');
+        global.fetch = (input) => {
+            const url = typeof input === 'string' ? input : (input && input.url);
+            return new Promise((resolve, reject) => {
+                https.get(url, (resp) => {
+                    let data = '';
+                    resp.on('data', (chunk) => { data += chunk; });
+                    resp.on('end', () => {
+                        const makeResponse = (jsonObj) => ({
+                            ok: true,
+                            status: 200,
+                            json: async () => jsonObj
+                        });
+                        try {
+                            if (url === EXT_MAP_URL) {
+                                const parsed = JSON.parse(data);
+                                return resolve(makeResponse(applyOverlay(parsed)));
+                            }
+                            return resolve(makeResponse(JSON.parse(data)));
+                        } catch (e) { return reject(e); }
+                    });
+                }).on('error', reject);
+            });
+        };
+        return;
+    }
+
+    // Wrap existing fetch to inject overlay when the extension map is requested
+    const originalFetch = global.fetch.bind(global);
+    global.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : (input && input.url);
+        const res = await originalFetch(input, init);
+        if (url === EXT_MAP_URL) {
+            try {
+                const json = await res.json();
+                const patched = applyOverlay(json);
+                // Return a response-like with .json() resolving to patched data
+                return { ok: true, status: res.status, json: async () => patched };
+            } catch (_) {
+                return res;
+            }
+        }
+        return res;
+    };
+}
 
 async function resolveWorkflow(workflowPath, options = {}) {
     try {
+        ensureGlobalFetchWithOverlay();
+        const lib = await loadComfyJson();
+
+        // Silence noisy console logs from downstream libs to keep stdout JSON-clean
+        const origLog = console.log; const origWarn = console.warn; const origInfo = console.info;
+        console.log = () => {}; console.warn = () => {}; console.info = () => {};
         // Read workflow file
         const workflowContent = fs.readFileSync(workflowPath, 'utf8');
         const workflow = JSON.parse(workflowContent);
@@ -20,14 +164,14 @@ async function resolveWorkflow(workflowPath, options = {}) {
         let result;
         if (isUIFormat) {
             // UI format (nodes array)
-            result = await generateDependencyGraphJson({
+            result = await lib.generateDependencyGraphJson({
                 workflow_json: workflow,
                 snapshot: options.snapshot,
                 pullLatestHashIfMissing: options.pullLatestHash !== false
             });
         } else {
             // API format
-            result = await generateDependencyGraph({
+            result = await lib.generateDependencyGraph({
                 workflow_api: workflow,
                 snapshot: options.snapshot,
                 pullLatestHashIfMissing: options.pullLatestHash !== false
@@ -57,9 +201,15 @@ async function resolveWorkflow(workflowPath, options = {}) {
             };
         }
 
+        // Restore console
+        console.log = origLog; console.warn = origWarn; console.info = origInfo;
         return output;
 
     } catch (error) {
+        try { // Restore console if we errored before restore
+            const origLog = console.log; const origWarn = console.warn; const origInfo = console.info;
+            console.log = origLog; console.warn = origWarn; console.info = origInfo;
+        } catch (_) {}
         return {
             success: false,
             error: error.message,
@@ -73,17 +223,34 @@ async function resolveCustomNodes(nodeClasses, options = {}) {
      * Resolve a list of custom node class names to their repositories
      */
     try {
-        // Fetch the extension-node-map
+        // Fetch the extension-node-map using an environment-agnostic fetch
         const extensionMapUrl = 'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json';
         const customNodeListUrl = 'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json';
 
-        const [extensionMapResponse, customNodeListResponse] = await Promise.all([
-            fetch(extensionMapUrl),
-            fetch(customNodeListUrl)
+        ensureGlobalFetchWithOverlay();
+        const [extensionMapRaw, customNodeList] = await Promise.all([
+            fetchUrl(extensionMapUrl),
+            fetchUrl(customNodeListUrl)
         ]);
 
-        const extensionMap = await extensionMapResponse.json();
-        const customNodeList = await customNodeListResponse.json();
+        // Apply the same overlay adjustments used for the library path
+        const extensionMap = (() => {
+            try {
+                const map = extensionMapRaw || {};
+                // Same entries as ensureGlobalFetchWithOverlay
+                map['https://github.com/pythongosssss/ComfyUI-Custom-Scripts'] = [
+                    [],
+                    {
+                        title: 'ComfyUI-Custom-Scripts',
+                        title_aux: 'Custom-Scripts',
+                        nodename_pattern: '^easy\\sseed_seed$'
+                    }
+                ];
+                return map;
+            } catch (_) {
+                return extensionMapRaw;
+            }
+        })();
 
         const resolved = {};
         const unresolved = [];

@@ -140,9 +140,20 @@ class DockerfileBuilder:
         """
         commands = []
 
+        def _safe_dir(name: str) -> str:
+            # Replace spaces with underscores and strip problematic characters
+            allowed = set(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            )
+            name = (name or "custom_node").replace(" ", "_")
+            # Remove path separators just in case
+            name = name.replace("/", "_").replace("\\", "_")
+            # Filter to allowed chars
+            return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
         for node in custom_nodes:
             repository = node.get("repository")
-            class_type = node.get("class_type", "custom_node")
+            class_type = _safe_dir(node.get("class_type", "custom_node"))
             commit = node.get("commit")
             python_deps = node.get("python_dependencies", [])
 
@@ -307,6 +318,14 @@ class DockerfileBuilder:
         custom_nodes: list | None = None,
         base_image: str = "python:3.12-slim",
         use_cuda: bool = False,
+        torch_version: str | None = None,
+        cuda_variant: str | None = None,
+        python_version: str | None = None,
+        nunchaku_version: str | None = None,
+        nunchaku_wheel_url: str | None = None,
+        enable_nunchaku: bool = False,
+        nunchaku_models_path: str | None = None,
+        extra_commands: list[str] | None = None,
     ) -> str:
         """Build complete Dockerfile for workflow.
 
@@ -325,6 +344,10 @@ class DockerfileBuilder:
         lines.append(f"FROM {base_image}")
         lines.append("")
 
+        # Avoid interactive prompts during apt operations
+        lines.append("ENV DEBIAN_FRONTEND=noninteractive")
+        lines.append("")
+
         # Install Python and create symlinks for CUDA images
         if use_cuda:
             lines.append("# Install Python and create symlinks")
@@ -338,45 +361,25 @@ class DockerfileBuilder:
 
         # System dependencies
         lines.append("# Install system dependencies")
-        if use_cuda:
-            # CUDA images need more system packages for custom nodes
-            system_packages = [
-                "git",
-                "wget",
-                "curl",
-                "g++",
-                "gcc",
-                "cmake",
-                "build-essential",
-                "libgl1-mesa-glx",
-                "libglib2.0-0",
-                "libsm6",
-                "libxext6",
-                "libxrender-dev",
-                "libgomp1",
-                "libglib2.0-0",
-                "ffmpeg",
-                "libsm6",
-                "libxext6",
-            ]
-        else:
-            # CPU version also needs build tools and OpenGL/OpenCV dependencies for some custom nodes
-            system_packages = [
-                "git",
-                "wget",
-                "curl",
-                "g++",
-                "gcc",
-                "cmake",
-                "build-essential",
-                "libgl1",
-                "libglib2.0-0",
-                "libsm6",
-                "libxext6",
-                "libxrender1",
-                "libgomp1",
-                "libglu1-mesa",
-            ]
+        # Build tools and OpenGL/OpenCV deps that are broadly available on Debian/Ubuntu (arm64/x86_64)
+        # Use libgl1 and libxrender1 (mesa-glx and -dev variants can be missing on some distros/arches)
+        system_packages = [
+            "git",
+            "wget",
+            "curl",
+            "g++",
+            "gcc",
+            "cmake",
+            "build-essential",
+            "libgl1",
+            "libglib2.0-0",
+            "libsm6",
+            "libxext6",
+            "libxrender1",
+            "libgomp1",
+            "libglu1-mesa",
+            "ffmpeg",
+        ]
 
         lines.extend(self.add_system_packages(system_packages))
         lines.append("")
@@ -389,16 +392,33 @@ class DockerfileBuilder:
         lines.append("WORKDIR /app/ComfyUI")
         lines.append("")
 
-        # Install PyTorch
+        # Install PyTorch (configurable version and CUDA variant)
+        lines.append("# Install PyTorch")
+        torch_pkgs = []
+        if torch_version:
+            # lockstep versions when provided
+            torch_pkgs = [
+                f"torch=={torch_version}",
+                f"torchvision=={_infer_vision_version(torch_version)}",
+                f"torchaudio=={_infer_audio_version(torch_version)}",
+            ]
+        else:
+            torch_pkgs = ["torch", "torchvision", "torchaudio"]
+
         if use_cuda:
-            lines.append("# Install PyTorch with CUDA support")
+            variant = cuda_variant or "cu121"
+            idx = f"https://download.pytorch.org/whl/{variant}"
             lines.append(
-                "RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+                "RUN pip install --no-cache-dir "
+                + " ".join(torch_pkgs)
+                + f" --index-url {idx}"
             )
         else:
-            lines.append("# Install PyTorch (CPU version)")
+            idx = "https://download.pytorch.org/whl/cpu"
             lines.append(
-                "RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
+                "RUN pip install --no-cache-dir "
+                + " ".join(torch_pkgs)
+                + f" --index-url {idx}"
             )
         lines.append("")
 
@@ -406,6 +426,29 @@ class DockerfileBuilder:
         lines.append("# Install ComfyUI requirements")
         lines.append("RUN pip install --no-cache-dir -r requirements.txt")
         lines.append("")
+
+        # Optional: install Nunchaku wheel and ComfyUI node
+        if enable_nunchaku:
+            lines.append("# Install Nunchaku (optional)")
+            py_cp = {
+                "3.11": "cp311",
+                "3.12": "cp312",
+                "3.13": "cp313",
+            }.get(str(python_version or "3.12"), "cp312")
+            tv = (torch_version or "2.7.1").split(".")
+            torch_minor = f"{tv[0]}.{tv[1]}" if len(tv) >= 2 else "2.7"
+            wheel = nunchaku_wheel_url or (
+                f"https://github.com/nunchaku-tech/nunchaku/releases/download/"
+                f"{nunchaku_version or 'v0.3.1'}/"
+                f"nunchaku-{(nunchaku_version or '0.3.1').lstrip('v')}+torch{torch_minor}-{py_cp}-{py_cp}-linux_x86_64.whl"
+            )
+            lines.append(f"RUN pip install --no-cache-dir {wheel}")
+            lines.append("WORKDIR /app/ComfyUI/custom_nodes")
+            lines.append(
+                "RUN git clone https://github.com/mit-han-lab/ComfyUI-nunchaku nunchaku_nodes || true"
+            )
+            lines.append("WORKDIR /app/ComfyUI")
+            lines.append("")
 
         # Install custom nodes
         if custom_nodes:
@@ -416,20 +459,31 @@ class DockerfileBuilder:
             # Collect all dependencies from custom nodes
             all_python_deps = set()
 
+            # Helper to sanitize directory names
+            def _safe_dir(name: str) -> str:
+                allowed = set(
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                )
+                name = (name or "custom_node").replace(" ", "_")
+                name = name.replace("/", "_").replace("\\", "_")
+                return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
             for node in custom_nodes:
                 # Clone repository
-                lines.append(f"# Install {node.name}")
-                lines.append(f"RUN git clone {node.repository} {node.name}")
+                safe_name = _safe_dir(getattr(node, "name", "custom_node"))
+                repo = getattr(node, "repository", None)
+                lines.append(f"# Install {safe_name}")
+                lines.append(f"RUN git clone {repo} {safe_name}")
 
                 # Checkout specific commit if provided
-                if node.commit_hash:
+                if getattr(node, "commit_hash", None):
                     lines.append(
-                        f"RUN cd {node.name} && git checkout {node.commit_hash}"
+                        f"RUN cd {safe_name} && git checkout {node.commit_hash}"
                     )
 
                 # Check for requirements.txt and install dependencies
                 lines.append(
-                    f"RUN if [ -f {node.name}/requirements.txt ]; then pip install --no-cache-dir -r {node.name}/requirements.txt; fi"
+                    f"RUN if [ -f {safe_name}/requirements.txt ]; then pip install --no-cache-dir -r {safe_name}/requirements.txt; fi"
                 )
 
                 # Collect Python dependencies
@@ -463,6 +517,24 @@ class DockerfileBuilder:
             lines.extend(self.add_custom_nodes(custom_nodes))
             lines.append("")
 
+        # Optional Nunchaku integration
+        if enable_nunchaku:
+            lines.append("# Nunchaku acceleration (optional)")
+            lines.append("WORKDIR /app/ComfyUI/custom_nodes")
+            lines.append(
+                "RUN git clone https://github.com/nunchaku-tech/ComfyUI-nunchaku.git"
+            )
+            if nunchaku_models_path:
+                lines.append(f"ENV NUNCHAKU_MODELS_PATH={nunchaku_models_path}")
+            lines.append("WORKDIR /app/ComfyUI")
+            lines.append("")
+
+        # Extra provisioning commands (e.g., model downloads)
+        if extra_commands:
+            lines.append("# Additional provisioning commands")
+            lines.extend(extra_commands)
+            lines.append("")
+
         # Expose port
         lines.append("EXPOSE 8188")
         lines.append("")
@@ -478,7 +550,45 @@ class DockerfileBuilder:
                 'CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--cpu"]'
             )
 
+        # Shared models volume link
+        lines.append("# Shared models volume")
+        lines.append(
+            "RUN mkdir -p /models && ln -s /models /app/ComfyUI/models_external || true"
+        )
+        lines.append('VOLUME ["/models"]')
+
         return "\n".join(lines)
+
+    def add_model_url_downloads(self, assets: list[dict[str, Any]]) -> list[str]:
+        """Generate Docker RUN commands to download model assets by URL.
+
+        Args:
+            assets: List of dicts with at least {type, filename, url}
+
+        Returns:
+            A list of RUN commands that create folders and wget files
+        """
+        if not assets:
+            return []
+        cmds: list[str] = []
+        seen: set[str] = set()
+        for a in assets:
+            mtype = str(a.get("type", "misc")).strip() or "misc"
+            fname = str(a.get("filename", "")).strip()
+            url = str(a.get("url", "")).strip()
+            if not fname or not url:
+                continue
+            if mtype not in seen:
+                cmds.append(f"RUN mkdir -p /app/ComfyUI/models/{mtype}")
+                seen.add(mtype)
+            dst = f"/app/ComfyUI/models/{mtype}/{fname}"
+            cmds.append(
+                "RUN wget -q --show-progress --progress=dot:giga --retry-connrefused -t 3 -O "
+                + dst
+                + " "
+                + url
+            )
+        return cmds
 
     def create_with_cache_mounts(self) -> str:
         """Create Dockerfile with cache mount optimization.
@@ -604,3 +714,51 @@ class DockerfileBuilder:
             "",
         ]
         return "\n".join(dockerfile)
+
+
+# Simple helpers to map torch minor to matching vision/audio where needed
+def _infer_vision_version(torch_version: str) -> str:
+    # conservative mapping based on common releases
+    mapping = {
+        "2.7.1": "0.22.1",
+        "2.7.0": "0.22.0",
+        "2.6.0": "0.21.0",
+        "2.5.1": "0.20.1",
+        "2.5.0": "0.20.0",
+        "2.4.1": "0.19.1",
+        "2.4.0": "0.19.0",
+        "2.3.1": "0.18.1",
+        "2.3.0": "0.18.0",
+        "2.2.2": "0.17.2",
+        "2.2.1": "0.17.1",
+        "2.2.0": "0.17.0",
+        "2.1.2": "0.16.2",
+        "2.1.1": "0.16.1",
+        "2.1.0": "0.16.0",
+        "2.0.1": "0.15.2",
+        "2.0.0": "0.15.1",
+    }
+    return mapping.get(torch_version, "0.22.1")
+
+
+def _infer_audio_version(torch_version: str) -> str:
+    mapping = {
+        "2.7.1": "2.7.1",
+        "2.7.0": "2.7.0",
+        "2.6.0": "2.6.0",
+        "2.5.1": "2.5.1",
+        "2.5.0": "2.5.0",
+        "2.4.1": "2.4.1",
+        "2.4.0": "2.4.0",
+        "2.3.1": "2.3.1",
+        "2.3.0": "2.3.0",
+        "2.2.2": "2.2.2",
+        "2.2.1": "2.2.1",
+        "2.2.0": "2.2.0",
+        "2.1.2": "2.1.2",
+        "2.1.1": "2.1.1",
+        "2.1.0": "2.1.0",
+        "2.0.1": "2.0.2",
+        "2.0.0": "2.0.1",
+    }
+    return mapping.get(torch_version, "2.7.1")

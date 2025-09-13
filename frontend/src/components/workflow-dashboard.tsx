@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 import { WorkflowTable } from './workflow-table';
@@ -10,17 +10,24 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RefreshCw, Search, Upload } from 'lucide-react';
+import { BuildMonitor } from '@/components/build-monitor';
+import { ExecutionsDashboard } from '@/components/executions-dashboard';
 
 export function WorkflowDashboard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showUpload, setShowUpload] = useState(false);
+  const [activeBuildId, setActiveBuildId] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // Avoid Radix/SSR hydration mismatches by rendering tabs only after mount
+  useEffect(() => setMounted(true), []);
 
   const { data: workflows, isLoading, error, refetch } = useQuery({
     queryKey: ['workflows', searchTerm],
     queryFn: async () => {
       console.log('Fetching workflows...');
       try {
-        const params: any = { limit: 100 };
+        const params: { limit: number; name_filter?: string } = { limit: 100 };
         if (searchTerm) {
           params.name_filter = searchTerm;
         }
@@ -33,6 +40,14 @@ export function WorkflowDashboard() {
       }
     },
   });
+
+  if (!mounted) {
+    return (
+      <div className="space-y-6">
+        <div className="text-sm text-muted-foreground">Loading dashboard…</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -98,26 +113,35 @@ export function WorkflowDashboard() {
           <Card>
             <CardHeader>
               <CardTitle>Recent Builds</CardTitle>
-              <CardDescription>
-                Monitor your Docker container builds
+              <CardDescription className="flex items-center justify-between">
+                <span>Monitor your Docker container builds</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    await fetch((process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000') + '/api/v1/containers/builds/cleanup', {
+                      method: 'POST'
+                    })
+                  }}
+                >
+                  Clear Pending Builds
+                </Button>
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <BuildsList />
+              <BuildsList onOpen={(id) => setActiveBuildId(id)} />
             </CardContent>
           </Card>
         </TabsContent>
 
-        <TabsContent value="executions">
+        <TabsContent value="executions" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Workflow Executions</CardTitle>
-              <CardDescription>
-                Track workflow execution history
-              </CardDescription>
+              <CardTitle>Executions</CardTitle>
+              <CardDescription>Queue, History, Gallery, Presets, Requests, Docs</CardDescription>
             </CardHeader>
             <CardContent>
-              <ExecutionsList />
+              <ExecutionsDashboard />
             </CardContent>
           </Card>
         </TabsContent>
@@ -134,14 +158,27 @@ export function WorkflowDashboard() {
           }}
         />
       )}
+
+      {activeBuildId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="w-full max-w-3xl bg-background rounded-lg p-4 shadow-lg border">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold">Build Details</h3>
+              <button onClick={() => setActiveBuildId(null)} className="text-sm text-muted-foreground">Close</button>
+            </div>
+            <BuildMonitor buildId={activeBuildId!} onComplete={() => {}} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function BuildsList() {
+function BuildsList({ onOpen }: { onOpen: (id: string) => void }) {
   const { data: builds, isLoading } = useQuery({
     queryKey: ['builds'],
     queryFn: () => apiClient.builds.list(),
+    refetchInterval: 5000,
   });
 
   if (isLoading) return <div>Loading builds...</div>;
@@ -149,7 +186,7 @@ function BuildsList() {
   return (
     <div className="space-y-2">
       {builds?.map((build) => (
-        <div key={build.id} className="flex items-center justify-between p-4 border rounded-lg">
+        <button key={build.id} onClick={() => onOpen(build.id)} className="flex items-center justify-between p-4 border rounded-lg w-full text-left hover:bg-muted/50">
           <div>
             <p className="font-medium">{build.image_name}:{build.tag}</p>
             <p className="text-sm text-muted-foreground">
@@ -164,40 +201,10 @@ function BuildsList() {
           <p className="text-sm text-muted-foreground">
             {new Date(build.created_at).toLocaleDateString()}
           </p>
-        </div>
+        </button>
       ))}
     </div>
   );
 }
 
-function ExecutionsList() {
-  const { data: executions, isLoading } = useQuery({
-    queryKey: ['executions'],
-    queryFn: () => apiClient.executions.list(),
-  });
-
-  if (isLoading) return <div>Loading executions...</div>;
-
-  return (
-    <div className="space-y-2">
-      {executions?.map((execution) => (
-        <div key={execution.id} className="flex items-center justify-between p-4 border rounded-lg">
-          <div>
-            <p className="font-medium">Prompt: {execution.prompt_id}</p>
-            <p className="text-sm text-muted-foreground">
-              Status: <span className={`font-medium ${
-                execution.status === 'completed' ? 'text-green-600' :
-                execution.status === 'failed' ? 'text-red-600' :
-                execution.status === 'running' ? 'text-yellow-600' :
-                'text-gray-600'
-              }`}>{execution.status}</span>
-            </p>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {new Date(execution.started_at).toLocaleDateString()}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
-}
+// Replaced simple list with ExecutionsDashboard

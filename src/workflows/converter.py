@@ -1,7 +1,7 @@
 """Converter for ComfyUI workflow formats (UI to API and vice versa)."""
 
 import logging
-from typing import Any
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ class WorkflowConverter:
         Returns:
             Workflow in API format
         """
-        api_workflow = {}
+        api_workflow: dict[str, Any] = {}
 
         # Handle empty workflow
         if "nodes" not in ui_workflow or not ui_workflow["nodes"]:
@@ -126,6 +126,55 @@ class WorkflowConverter:
 
         # Build link mapping first
         link_map = self._build_link_map(ui_workflow.get("links", []))
+
+        # Build quick node lookup
+        node_map: dict[int, dict[str, Any]] = {}
+        for node in ui_workflow.get("nodes", []) or []:
+            if isinstance(node, dict) and isinstance(node.get("id"), int):
+                node_map[int(node["id"])] = node
+
+        # Detect simple pass-through nodes like Reroute and precompute their upstream source
+        # In UI format, Reroute has a single input and a single output, but ComfyUI server
+        # has no executable "Reroute" class; prompts containing it will fail.
+        # We flatten Reroute by reconnecting its consumers to the Reroute's upstream source.
+        reroute_upstream: dict[int, tuple[int, int]] = {}
+        try:
+            for node in ui_workflow.get("nodes", []) or []:
+                if not isinstance(node, dict):
+                    continue
+                if str(node.get("type")) != "Reroute":
+                    continue
+                nid = node.get("id")
+                if not isinstance(nid, int):
+                    # Only standard numeric ids are expected
+                    continue
+                # Find the first linked input
+                for input_config in node.get("inputs", []) or []:
+                    if isinstance(input_config, dict):
+                        link_id = input_config.get("link")
+                        if link_id is not None and link_id in link_map:
+                            reroute_upstream[nid] = link_map[link_id]
+                            break
+        except Exception:
+            # Non-fatal; if anything goes wrong we just won't flatten
+            pass
+
+        # Extract literal values from TextInput_-style nodes to inline later
+        textinput_values: dict[int, Any] = {}
+        try:
+            for node in ui_workflow.get("nodes", []) or []:
+                if not isinstance(node, dict):
+                    continue
+                if str(node.get("type")) != "TextInput_":
+                    continue
+                nid = node.get("id")
+                if not isinstance(nid, int):
+                    continue
+                values = node.get("widgets_values") or []
+                if isinstance(values, list) and values:
+                    textinput_values[nid] = values[0]
+        except Exception:
+            pass
 
         # Convert each node
         for node in ui_workflow["nodes"]:
@@ -137,6 +186,10 @@ class WorkflowConverter:
             class_type = node.get("type", "")
             if not class_type:
                 logger.warning(f"Node {node_id} has no type field")
+                continue
+
+            # Skip UI-only helpers like Reroute or TextInput_ in the API prompt
+            if class_type in ("Reroute", "TextInput_", "ShowText|pysssss"):
                 continue
 
             # Build API node
@@ -152,6 +205,34 @@ class WorkflowConverter:
                         if link_id is not None and link_id in link_map:
                             # This input is connected to another node
                             source_node, source_slot = link_map[link_id]
+                            # Flatten chains of Reroute nodes if present
+                            visited: set[int] = set()
+                            while (
+                                isinstance(source_node, int)
+                                and source_node in reroute_upstream
+                                and source_node not in visited
+                            ):
+                                visited.add(source_node)
+                                upstream = reroute_upstream.get(source_node)
+                                if upstream is None:
+                                    break
+                                source_node, source_slot = upstream
+
+                            # If source is a TextInput_ node, inline its literal value
+                            if isinstance(source_node, int):
+                                src_node_obj = node_map.get(source_node)
+                                if (
+                                    src_node_obj is not None
+                                    and str(src_node_obj.get("type")) == "TextInput_"
+                                    and source_node in textinput_values
+                                ):
+                                    # Inline literal (fallback to widget value lookup)
+                                    api_node["inputs"][input_name] = textinput_values[
+                                        source_node
+                                    ]
+                                    continue
+
+                            # Default: keep as a connection
                             api_node["inputs"][input_name] = [
                                 str(source_node),
                                 source_slot,
@@ -253,9 +334,33 @@ class WorkflowConverter:
         Returns:
             Workflow in UI format
         """
-        # This is a more complex operation that requires layout information
-        # For now, we'll implement a basic version
-        ui_workflow = {
+        # This is a more complex operation that requires layout information.
+        # Provide precise typing so mypy knows the shapes of values in the UI workflow.
+
+        class UINode(TypedDict):
+            id: int | str
+            type: str
+            pos: list[int]
+            size: list[int]
+            flags: dict[str, Any]
+            order: int
+            mode: int
+            inputs: list[Any]
+            outputs: list[Any]
+            properties: dict[str, Any]
+            widgets_values: list[Any]
+
+        class UIWorkflow(TypedDict):
+            last_node_id: int
+            last_link_id: int
+            nodes: list[UINode]
+            links: list[list[Any]]
+            groups: list[Any]
+            config: dict[str, Any]
+            extra: dict[str, Any]
+            version: float
+
+        ui_workflow: UIWorkflow = {
             "last_node_id": 0,
             "last_link_id": 0,
             "nodes": [],
@@ -284,7 +389,7 @@ class WorkflowConverter:
                 current_x = 0
                 current_y += 200
 
-            ui_node = {
+            ui_node: UINode = {
                 "id": int(node_id) if node_id.isdigit() else node_id,
                 "type": node_data.get("class_type", "Unknown"),
                 "pos": [pos_x, pos_y],
@@ -349,4 +454,5 @@ class WorkflowConverter:
 
         ui_workflow["last_link_id"] = link_id_counter - 1
 
-        return ui_workflow
+        # Return as a plain dict[str, Any] to satisfy callers and mypy
+        return dict(ui_workflow)

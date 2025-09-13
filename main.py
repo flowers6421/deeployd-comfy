@@ -288,6 +288,12 @@ def build_workflow(
     models_path: str | None = typer.Option(
         None, help="Path to your ComfyUI models folder (will be mounted as volume)"
     ),
+    enable_nunchaku: bool = typer.Option(
+        False, help="Enable Nunchaku acceleration (installs ComfyUI-nunchaku)"
+    ),
+    nunchaku_models_path: str | None = typer.Option(
+        None, help="Optional path for 4-bit models used by Nunchaku"
+    ),
 ):
     """Build a Docker container from a ComfyUI workflow."""
     console.print(f"[bold blue]Processing workflow:[/bold blue] {workflow_path}")
@@ -575,6 +581,8 @@ def build_workflow(
                 if use_cuda
                 else "python:3.11-slim",
                 use_cuda=use_cuda,
+                enable_nunchaku=enable_nunchaku,
+                nunchaku_models_path=nunchaku_models_path,
             )
             dockerfile_path = output_dir / "Dockerfile"
             with open(dockerfile_path, "w") as f:

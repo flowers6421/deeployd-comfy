@@ -279,3 +279,14 @@ NODE_DISPLAY_NAME_MAPPINGS = {
         assert installer.check_compatibility(node, "0.5.0") is True
         assert installer.check_compatibility(node, "2.0.0") is False
         assert installer.check_compatibility(node, "0.0.0") is False
+
+    def test_known_gguf_node_mapping(self, installer):
+        """GGUF custom nodes should resolve to ComfyUI-GGUF repo without warnings."""
+        assert (
+            installer.find_repository_by_class_name("DualCLIPLoaderGGUF")
+            == "https://github.com/city96/ComfyUI-GGUF"
+        )
+        assert (
+            installer.find_repository_by_class_name("UnetLoaderGGUF")
+            == "https://github.com/city96/ComfyUI-GGUF"
+        )

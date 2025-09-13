@@ -5,12 +5,12 @@ import json
 import re
 import subprocess
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 
+import requests
 from packaging import version
 
 from src.workflows.constants import BUILTIN_NODES
@@ -53,15 +53,29 @@ class CustomNodeInstaller:
             "sklearn": "scikit-learn",
             "yaml": "pyyaml",
         }
-        self._comfyui_manager_database = None
-        self._node_mapping_cache = {}
-        self._comprehensive_node_mapping = {}
+        self._comfyui_manager_database: dict[str, Any] | None = None
+        self._node_mapping_cache: dict[str, str | None] = {}
+        self._comprehensive_node_mapping: dict[str, str] = {}
         self._database_cache_path = (
             self.cache_dir / "comfyui-manager-db.json" if self.cache_dir else None
         )
         self._node_mapping_cache_path = (
             self.cache_dir / "node-class-mappings.json" if self.cache_dir else None
         )
+        # Known mappings for GGUF-related nodes (ComfyUI-GGUF)
+        self._known_gguf_nodes: dict[str, str] = {
+            "UnetLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+            "DualCLIPLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+            "CLIPLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+        }
+        # Additional known patterns/mappings
+        self._known_mappings: dict[str, str] = {
+            "IPAdapterApply": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "IPAdapterEncoder": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "ComfyUI_IPAdapter_plus": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "KJNodes": "https://github.com/kijai/ComfyUI-KJNodes",
+            "ComfyUI-KJNodes": "https://github.com/kijai/ComfyUI-KJNodes",
+        }
 
     def extract_custom_nodes(
         self, workflow_nodes: dict[str, Any]
@@ -109,9 +123,17 @@ class CustomNodeInstaller:
         """
         database_url = "https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/node_db/new/custom-node-list.json"
 
+        def _assert_https(url: str) -> None:
+            if not url.startswith("https://"):
+                raise NodeInstallationError(
+                    "Only https:// URLs are allowed for downloads"
+                )
+
         try:
-            with urllib.request.urlopen(database_url, timeout=30) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            _assert_https(database_url)
+            resp = requests.get(database_url, timeout=30)
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
 
             # Cache the database if cache directory is available
             if self._database_cache_path:
@@ -124,7 +146,7 @@ class CustomNodeInstaller:
         except (URLError, json.JSONDecodeError) as e:
             raise NodeInstallationError(
                 f"Failed to download ComfyUI-Manager database: {e}"
-            )
+            ) from e
 
     def load_comfyui_manager_database(self) -> dict[str, Any]:
         """Load ComfyUI-Manager database from cache or download.
@@ -141,13 +163,18 @@ class CustomNodeInstaller:
             try:
                 with open(self._database_cache_path) as f:
                     self._comfyui_manager_database = json.load(f)
-                return self._comfyui_manager_database
+                    if self._comfyui_manager_database is not None:
+                        return self._comfyui_manager_database
             except (OSError, json.JSONDecodeError):
                 # Cache corrupted, download fresh
                 pass
 
         # Download fresh database
-        self._comfyui_manager_database = self.download_comfyui_manager_database()
+        try:
+            self._comfyui_manager_database = self.download_comfyui_manager_database()
+        except NodeInstallationError:
+            # If download fails, return empty dict
+            self._comfyui_manager_database = {}
         return self._comfyui_manager_database
 
     def find_repository_by_class_name(self, class_name: str) -> str | None:
@@ -159,6 +186,13 @@ class CustomNodeInstaller:
         Returns:
             Repository URL if found, None otherwise
         """
+        # Quick: known GGUF nodes
+        if class_name in self._known_gguf_nodes:
+            return self._known_gguf_nodes[class_name]
+        # Quick: additional known mappings
+        if class_name in self._known_mappings:
+            return self._known_mappings[class_name]
+
         # Check cache first
         if class_name in self._node_mapping_cache:
             return self._node_mapping_cache[class_name]
@@ -185,24 +219,30 @@ class CustomNodeInstaller:
                     if not repo_url and entry_files:
                         # Try to extract from first file URL
                         first_file = entry_files[0]
-                        if "github.com" in first_file:
-                            # Convert raw GitHub URL to repository URL
-                            if "raw.githubusercontent.com" in first_file:
-                                # Convert raw URL to repo URL
-                                parts = first_file.split("/")
-                                if len(parts) >= 5:
-                                    user = parts[3]
-                                    repo = parts[4]
-                                    repo_url = f"https://github.com/{user}/{repo}"
+                        # Convert raw GitHub URL to repository URL
+                        if "raw.githubusercontent.com" in first_file:
+                            parts = first_file.split("/")
+                            if len(parts) >= 5:
+                                user = parts[3]
+                                repo = parts[4]
+                                repo_url = f"https://github.com/{user}/{repo}"
 
                     if repo_url and self.validate_repository_url(repo_url):
                         # Cache the result
                         self._node_mapping_cache[class_name] = repo_url
-                        return repo_url
+                        return str(repo_url) if isinstance(repo_url, str) else None
 
         except Exception:
             # Fallback silently - we'll use manual input
             pass
+
+        # Pattern fallbacks
+        if class_name.endswith("GGUF") or "GGUF" in class_name:
+            return "https://github.com/city96/ComfyUI-GGUF"
+        if "IPAdapter" in class_name:
+            return "https://github.com/cubiq/ComfyUI_IPAdapter_plus"
+        if "KJNodes" in class_name or class_name in {"SetNode", "GetNode", "SetGet"}:
+            return "https://github.com/kijai/ComfyUI-KJNodes"
 
         return None
 
@@ -216,6 +256,11 @@ class CustomNodeInstaller:
         Returns:
             File content as string, None if not found
         """
+
+        def _assert_https(url: str) -> None:
+            if not url.startswith("https://"):
+                raise ValueError("Only https:// URLs are allowed")
+
         try:
             # Convert repo URL to raw URL
             if "github.com" in repo_url:
@@ -225,9 +270,10 @@ class CustomNodeInstaller:
                     user = parts[-2]
                     repo = parts[-1].replace(".git", "")
                     raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
-
-                    with urllib.request.urlopen(raw_url, timeout=10) as response:
-                        return response.read().decode("utf-8")
+                    _assert_https(raw_url)
+                    r = requests.get(raw_url, timeout=10)
+                    if r.status_code == 200:
+                        return r.text
         except Exception:
             # Try 'master' branch if 'main' fails
             try:
@@ -237,9 +283,10 @@ class CustomNodeInstaller:
                         user = parts[-2]
                         repo = parts[-1].replace(".git", "")
                         raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/master/{file_path}"
-
-                        with urllib.request.urlopen(raw_url, timeout=10) as response:
-                            return response.read().decode("utf-8")
+                        _assert_https(raw_url)
+                        r2 = requests.get(raw_url, timeout=10)
+                        if r2.status_code == 200:
+                            return r2.text
             except Exception:
                 pass
 
@@ -266,24 +313,24 @@ class CustomNodeInstaller:
                         if (
                             isinstance(target, ast.Name)
                             and target.id == "NODE_CLASS_MAPPINGS"
+                            and isinstance(node.value, ast.Dict)
                         ):
                             # Parse the dictionary
-                            if isinstance(node.value, ast.Dict):
-                                for key_node, value_node in zip(
-                                    node.value.keys, node.value.values
+                            for key_node, _value_node in zip(
+                                node.value.keys, node.value.values
+                            ):
+                                if isinstance(key_node, ast.Str):
+                                    # Python < 3.8
+                                    key = key_node.s
+                                elif isinstance(key_node, ast.Constant) and isinstance(
+                                    key_node.value, str
                                 ):
-                                    if isinstance(key_node, ast.Str):
-                                        # Python < 3.8
-                                        key = key_node.s
-                                    elif isinstance(
-                                        key_node, ast.Constant
-                                    ) and isinstance(key_node.value, str):
-                                        # Python >= 3.8
-                                        key = key_node.value
-                                    else:
-                                        continue
+                                    # Python >= 3.8
+                                    key = key_node.value
+                                else:
+                                    continue
 
-                                    mappings[key] = key  # Map to itself for now
+                                mappings[key] = key  # Map to itself for now
 
         except SyntaxError:
             # Fallback to regex parsing if AST fails
@@ -588,7 +635,6 @@ class CustomNodeInstaller:
 
         # Fallback to original implementation
         # First, collect all unresolved custom nodes
-        unresolved_nodes = []
 
         for node in custom_nodes:
             class_name = node.get("class_type", "")
@@ -815,12 +861,21 @@ class CustomNodeInstaller:
         lines.append("WORKDIR /app/custom_nodes")
         lines.append("")
 
+        def _safe_dir(name: str) -> str:
+            allowed = set(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            )
+            name = (name or "custom_node").replace(" ", "_")
+            name = name.replace("/", "_").replace("\\", "_")
+            return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
         for node in nodes:
-            lines.append(f"# Install {node.name}")
-            lines.append(f"RUN git clone {node.repository} {node.name}")
+            safe_name = _safe_dir(node.name)
+            lines.append(f"# Install {safe_name}")
+            lines.append(f"RUN git clone {node.repository} {safe_name}")
 
             if node.commit_hash:
-                lines.append(f"RUN cd {node.name} && git checkout {node.commit_hash}")
+                lines.append(f"RUN cd {safe_name} && git checkout {node.commit_hash}")
 
             if node.python_dependencies:
                 deps = " ".join(node.python_dependencies)
@@ -845,7 +900,7 @@ class CustomNodeInstaller:
         visited = set()
         result = []
 
-        def visit(node_name: str):
+        def visit(node_name: str) -> None:
             if node_name in visited:
                 return
 
@@ -868,7 +923,7 @@ class CustomNodeInstaller:
 
         return result
 
-    def set_cache_directory(self, cache_dir: str):
+    def set_cache_directory(self, cache_dir: str) -> None:
         """Set cache directory for downloaded nodes.
 
         Args:
@@ -877,7 +932,7 @@ class CustomNodeInstaller:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def download_and_cache_node(self, node_metadata: NodeMetadata):
+    def download_and_cache_node(self, node_metadata: NodeMetadata) -> None:
         """Download and cache a custom node.
 
         Args:
@@ -913,7 +968,7 @@ class CustomNodeInstaller:
                     f"Failed to checkout commit: {result.stderr}"
                 )
 
-    def install_node(self, node_metadata: NodeMetadata):
+    def install_node(self, node_metadata: NodeMetadata) -> None:
         """Install a custom node.
 
         Args:
@@ -970,10 +1025,19 @@ class CustomNodeInstaller:
         """
         commands = []
 
+        def _safe_dir(name: str) -> str:
+            allowed = set(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            )
+            name = (name or "custom_node").replace(" ", "_")
+            name = name.replace("/", "_").replace("\\", "_")
+            return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
         # Clone all repositories
         for node in nodes:
+            safe_name = _safe_dir(node.name)
             commands.append(
-                f"RUN git clone {node.repository} " f"/app/custom_nodes/{node.name}"
+                f"RUN git clone {node.repository} /app/custom_nodes/{safe_name}"
             )
 
         # Collect all Python dependencies
@@ -1000,7 +1064,7 @@ class CustomNodeInstaller:
         with open(filepath, encoding="utf-8") as f:
             content = f.read()
 
-        mappings = {
+        mappings: dict[str, dict[str, Any]] = {
             "class_mappings": {},
             "display_names": {},
         }

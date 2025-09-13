@@ -3,6 +3,7 @@
 import json
 import logging
 import subprocess
+import typing as t
 from pathlib import Path
 from typing import Any
 
@@ -23,43 +24,55 @@ class ComfyUIJsonResolver:
         self.cache_dir = cache_dir
         self.node_bridge_path = Path(__file__).parent / "node_bridge.js"
         self._resolved_cache: dict[str, dict[str, Any]] = {}
-        self._known_mappings = self._load_known_mappings()
+        # Deprecated: prefer upstream comfyui-json + Manager maps
+        self._known_mappings: dict[str, dict[str, Any]] = {}
 
         # Check if Node.js is available
         self._check_nodejs()
 
-    def _check_nodejs(self):
+    def _check_nodejs(self) -> None:
         """Check if Node.js is available."""
         try:
             result = subprocess.run(
                 ["node", "--version"], capture_output=True, text=True, check=True
             )
             logger.debug(f"Node.js version: {result.stdout.strip()}")
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise RuntimeError(
                 "Node.js is required for comfyui-json resolver. "
                 "Please install Node.js: https://nodejs.org/"
-            )
+            ) from e
 
-    def _load_known_mappings(self) -> dict[str, dict[str, Any]]:
-        """Load known node mappings from JSON file.
-
-        Returns:
-            Dictionary of known node mappings
-        """
-        mappings_file = Path(__file__).parent / "known_node_mappings.json"
-
-        if not mappings_file.exists():
-            logger.debug("No known_node_mappings.json file found")
-            return {}
-
+        # Ensure we can load vendored comfyui-json via the node bridge
         try:
-            with open(mappings_file) as f:
-                data = json.load(f)
-                return data.get("mappings", {})
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load known mappings: {e}")
-            return {}
+            bridge_dir = str(self.node_bridge_path.parent)
+            vendored_loader = (
+                "const fs=require('fs'); const p=require('path'); "
+                "const mod=p.join(process.cwd(),'vendor','comfyui-json','dist','index.js'); "
+                "if(!fs.existsSync(mod)){throw new Error('vendored comfyui-json not found at '+mod);} "
+                "require(mod); console.log('ok')"
+            )
+            subprocess.run(
+                ["node", "-e", vendored_loader],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=bridge_dir,
+            )
+        except subprocess.CalledProcessError as e:
+            msg = e.stderr.strip() or e.stdout.strip() or str(e)
+            raise RuntimeError(
+                "Vendored comfyui-json not found. Expected at "
+                "src/workflows/vendor/comfyui-json/dist/index.js. "
+                "Please vendor the library (copy dist files) into that path. "
+                f"Details: {msg}"
+            ) from e
+
+    # Note: intentionally not loading local known mappings. We rely on
+    # comfyui-json (which uses ComfyUI-Manager maps) for authoritative
+    # resolution to avoid drift.
+    def _load_known_mappings(self) -> dict[str, dict[str, Any]]:  # pragma: no cover
+        return {}
 
     def resolve_workflow(
         self, workflow_path: Path, pull_latest_hash: bool = True
@@ -90,7 +103,7 @@ class ComfyUIJsonResolver:
                 cwd=str(self.node_bridge_path.parent),
             )
 
-            return json.loads(result.stdout)
+            return t.cast(dict[str, Any], json.loads(result.stdout))
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Node.js bridge error: {e.stderr}")
@@ -103,10 +116,10 @@ class ComfyUIJsonResolver:
                     )
             except json.JSONDecodeError:
                 pass
-            raise RuntimeError(f"Failed to resolve workflow: {e}")
+            raise RuntimeError(f"Failed to resolve workflow: {e}") from e
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse resolver output: {e}")
-            raise RuntimeError(f"Invalid JSON from resolver: {e}")
+            raise RuntimeError(f"Invalid JSON from resolver: {e}") from e
 
     def resolve_node_classes(
         self, node_classes: list[str]
@@ -124,15 +137,9 @@ class ComfyUIJsonResolver:
         resolved = {}
 
         for node_class in node_classes:
-            # Check cache
+            # Cache-only fast path; otherwise defer to comfyui-json resolution
             if node_class in self._resolved_cache:
                 resolved[node_class] = self._resolved_cache[node_class]
-            # Check known mappings
-            elif node_class in self._known_mappings:
-                mapping = self._known_mappings[node_class]
-                resolved[node_class] = mapping
-                self._resolved_cache[node_class] = mapping
-                logger.debug(f"Resolved '{node_class}' from known mappings")
             else:
                 uncached_nodes.append(node_class)
 
@@ -236,7 +243,7 @@ class ComfyUIJsonResolver:
                     custom_node_classes.add(node_type)
         else:
             # API format
-            for node_id, node_data in workflow_data.items():
+            for _node_id, node_data in workflow_data.items():
                 if isinstance(node_data, dict) and "class_type" in node_data:
                     class_type = node_data["class_type"]
                     if not self._is_builtin_node(class_type):
@@ -263,7 +270,7 @@ class ComfyUIJsonResolver:
 
         # Combine results
         all_resolved = {**manually_resolved}
-        for node_class, info in resolved.items():
+        for _node_class, info in resolved.items():
             if info.get("url"):
                 all_resolved[info["url"]] = info
 
@@ -325,4 +332,89 @@ class ComfyUIJsonResolver:
                 "warning": node_data.get("warning"),
             }
 
+        # Augment with injected extensions inferred from the workflow itself
+        try:
+            with open(workflow_path, encoding="utf-8") as f:
+                wf_dict = json.load(f)
+            injected = self._infer_injected_extensions(wf_dict)
+            for url, meta in injected.items():
+                if url not in result["custom_nodes"]:
+                    result["custom_nodes"][url] = meta
+        except Exception:
+            pass
+
         return result
+
+    def _infer_injected_extensions(
+        self, workflow: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """Infer extension repos that inject behavior into builtin nodes.
+
+        Currently detects nonstandard KSampler/KSamplerAdvanced "scheduler" values
+        and maps them to known repositories that provide those options.
+        """
+        # Core scheduler values (Comfy core). If a workflow uses a scheduler outside this set,
+        # a third-party extension is likely required.
+        core_schedulers = {
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal",
+        }
+
+        # Minimal curated mapping for injected scheduler tokens -> repo
+        injected_map = {
+            # RES4LYF injects additional beta schedule variants, including beta57
+            "beta57": {
+                "url": "https://github.com/ClownsharkBatwing/RES4LYF",
+                "name": "RES4LYF",
+            },
+        }
+
+        def iter_nodes_api(api_workflow: dict[str, Any]) -> t.Iterator[dict[str, Any]]:
+            for k, v in api_workflow.items():
+                if k.startswith("_"):
+                    continue
+                if isinstance(v, dict) and "class_type" in v:
+                    yield v
+
+        # Convert UI->API if needed by inspecting keys
+        if "nodes" in workflow and isinstance(workflow["nodes"], list):
+            try:
+                from src.workflows.converter import WorkflowConverter
+
+                wf_api = WorkflowConverter().convert(workflow)
+            except Exception:
+                wf_api = {}
+        else:
+            wf_api = workflow
+
+        required: dict[str, dict[str, Any]] = {}
+        for node in iter_nodes_api(wf_api):
+            ct = str(node.get("class_type", ""))
+            if ct not in {"KSampler", "KSamplerAdvanced"}:
+                continue
+            inputs = node.get("inputs", {}) or {}
+            sched = inputs.get("scheduler")
+            if (
+                isinstance(sched, str)
+                and sched
+                and sched not in core_schedulers
+                and sched in injected_map
+            ):
+                info = injected_map[sched]
+                required[info["url"]] = {
+                    "url": info["url"],
+                    "name": info.get("name", info["url"].rsplit("/", 1)[-1]),
+                    "hash": None,
+                    "pip": [],
+                    "files": [],
+                    "install_type": "git-clone",
+                    "warning": "Inferred from scheduler value",
+                }
+        return required

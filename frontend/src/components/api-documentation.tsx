@@ -32,7 +32,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'list-workflows',
     method: 'GET',
-    path: '/api/workflows',
+    path: '/api/v1/workflows',
     description: 'List all workflows with optional filtering',
     parameters: [
       { name: 'limit', type: 'number', required: false, default: 10 },
@@ -43,7 +43,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'create-workflow',
     method: 'POST',
-    path: '/api/workflows',
+    path: '/api/v1/workflows',
     description: 'Create a new workflow from uploaded JSON file',
     parameters: [
       { name: 'file', type: 'file', required: true },
@@ -54,7 +54,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'get-workflow',
     method: 'GET',
-    path: '/api/workflows/{id}',
+    path: '/api/v1/workflows/{id}',
     description: 'Get a specific workflow by ID',
     parameters: [
       { name: 'id', type: 'string', required: true, in: 'path' },
@@ -63,7 +63,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'create-build',
     method: 'POST',
-    path: '/api/builds',
+    path: '/api/v1/containers/builds',
     description: 'Start a new Docker container build for a workflow',
     parameters: [
       { name: 'workflow_id', type: 'string', required: true },
@@ -72,7 +72,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'get-build-logs',
     method: 'GET',
-    path: '/api/builds/{id}/logs',
+    path: '/api/v1/containers/builds/{id}/logs',
     description: 'Get build logs for a specific build',
     parameters: [
       { name: 'id', type: 'string', required: true, in: 'path' },
@@ -81,7 +81,7 @@ const API_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'execute-workflow',
     method: 'POST',
-    path: '/api/executions',
+    path: '/api/v1/executions',
     description: 'Execute a workflow with given parameters',
     parameters: [
       { name: 'workflow_id', type: 'string', required: true },
@@ -100,7 +100,7 @@ export function ApiDocumentation() {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       let url = `${apiUrl}${selectedEndpoint.path}`;
-      
+
       // Replace path parameters
       selectedEndpoint.parameters
         .filter(p => p.in === 'path')
@@ -142,7 +142,7 @@ export function ApiDocumentation() {
       const response = await fetch(url, options);
       const data = await response.json();
       setTestResult(JSON.stringify(data, null, 2));
-      
+
       if (response.ok) {
         toast.success('API request successful');
       } else {
@@ -157,7 +157,7 @@ export function ApiDocumentation() {
   const generateCurlCommand = () => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
     let url = `${apiUrl}${selectedEndpoint.path}`;
-    
+
     // Replace path parameters
     selectedEndpoint.parameters
       .filter(p => p.in === 'path')
@@ -166,7 +166,7 @@ export function ApiDocumentation() {
       });
 
     let curl = `curl -X ${selectedEndpoint.method} "${url}"`;
-    
+
     if (selectedEndpoint.method === 'POST') {
       curl += ` \\\n  -H "Content-Type: application/json"`;
       const bodyParams = selectedEndpoint.parameters
@@ -177,7 +177,7 @@ export function ApiDocumentation() {
         }, {} as Record<string, string>);
       curl += ` \\\n  -d '${JSON.stringify(bodyParams, null, 2)}'`;
     }
-    
+
     return curl;
   };
 

@@ -24,6 +24,8 @@ import { MoreHorizontal, Eye, Rocket, Download, Trash2 } from 'lucide-react';
 import { WorkflowDetail } from './workflow-detail';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { BuildDrawer } from './build-drawer';
+import { ExecDrawer } from './executions/exec-drawer';
 
 interface WorkflowTableProps {
   workflows: Workflow[];
@@ -31,14 +33,35 @@ interface WorkflowTableProps {
 
 export function WorkflowTable({ workflows }: WorkflowTableProps) {
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
+  const [activeBuildId, setActiveBuildId] = useState<string | null>(null);
+  const [showBuildOpts, setShowBuildOpts] = useState<Workflow | null>(null);
+  const [drawerWorkflow, setDrawerWorkflow] = useState<Workflow | null>(null);
+  const [runWorkflowId, setRunWorkflowId] = useState<string | null>(null);
+  const [pythonVersion, setPythonVersion] = useState<'3.11' | '3.12' | '3.13'>('3.12');
+  const [noCache, setNoCache] = useState(false);
+  const [resolvedNodes, setResolvedNodes] = useState<{ name: string; repository: string; commit?: string; pip?: string[] }[]>([]);
+  const [manualRepos, setManualRepos] = useState<Record<string, string>>({});
+  const [extraNodes, setExtraNodes] = useState<{ name: string; repository: string; commit?: string }[]>([]);
+  const [modelAssets, setModelAssets] = useState<{ type: string; filename: string; url: string }[]>([]);
 
   const handleBuild = async (workflow: Workflow) => {
+    setShowBuildOpts(workflow);
+    // Pre-seed models from workflow dependencies for better UX
     try {
-      await apiClient.builds.create(workflow.id);
-      toast.success('Build started successfully');
-    } catch {
-      toast.error('Failed to start build');
-    }
+      const deps = (workflow.dependencies?.models || {}) as Record<string, string[]>;
+      const seeded: { type: string; filename: string; url: string }[] = [];
+      Object.entries(deps).forEach(([type, files]) => {
+        (files || []).forEach((f) => seeded.push({ type, filename: f, url: '' }))
+      })
+      setModelAssets(seeded)
+    } catch {}
+    try {
+      const res = await apiClient.workflows.resolveNodes(workflow.id)
+      setResolvedNodes(res)
+      setManualRepos({})
+    } catch {}
+    // Open new Build Drawer UI
+    setDrawerWorkflow(workflow)
   };
 
   const handleDelete = async (workflow: Workflow) => {
@@ -54,6 +77,10 @@ export function WorkflowTable({ workflows }: WorkflowTableProps) {
       toast.error('Failed to delete workflow');
     }
   };
+
+  const handleRun = async (workflow: Workflow) => {
+    setRunWorkflowId(workflow.id)
+  }
 
   return (
     <>
@@ -121,6 +148,10 @@ export function WorkflowTable({ workflows }: WorkflowTableProps) {
                       <Rocket className="mr-2 h-4 w-4" />
                       Build Container
                     </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleRun(workflow)}>
+                      <Rocket className="mr-2 h-4 w-4" />
+                      Run Execution
+                    </DropdownMenuItem>
                     <DropdownMenuItem>
                       <Download className="mr-2 h-4 w-4" />
                       Download
@@ -147,6 +178,16 @@ export function WorkflowTable({ workflows }: WorkflowTableProps) {
           open={!!selectedWorkflow}
           onClose={() => setSelectedWorkflow(null)}
         />
+      )}
+
+      {/* Build overlay removed in favor of BuildDrawer */}
+
+      {drawerWorkflow && (
+        <BuildDrawer workflow={drawerWorkflow} open={!!drawerWorkflow} onClose={() => setDrawerWorkflow(null)} />
+      )}
+
+      {runWorkflowId && (
+        <ExecDrawer workflowId={runWorkflowId} open onClose={() => setRunWorkflowId(null)} />
       )}
     </>
   );

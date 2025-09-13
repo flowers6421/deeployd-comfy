@@ -48,6 +48,7 @@ export interface ContainerBuild {
   build_status: 'pending' | 'building' | 'success' | 'failed';
   dockerfile?: string;
   build_logs?: string;
+  resolved_nodes?: { name: string; repository: string; commit?: string; pip?: string[] }[];
   image_size?: number;
   build_duration?: number;
   created_at: string;

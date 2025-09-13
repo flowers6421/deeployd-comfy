@@ -8,9 +8,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
-import { Terminal, RefreshCw, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { Terminal, RefreshCw, CheckCircle, XCircle, Clock, Copy, ShieldCheck } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
 
 interface BuildMonitorProps {
   buildId: string;
@@ -19,8 +20,14 @@ interface BuildMonitorProps {
 
 export function BuildMonitor({ buildId, onComplete }: BuildMonitorProps) {
   const [logs, setLogs] = useState<string[]>([]);
+  const [verifyResult, setVerifyResult] = useState<{
+    ok?: boolean;
+    expected?: string[];
+    present?: string[];
+    missing?: string[];
+  } | null>(null);
   const [progress, setProgress] = useState<BuildProgress | null>(null);
-  
+
   // Fetch build details
   const { data: build, refetch } = useQuery({
     queryKey: ['build', buildId],
@@ -32,23 +39,62 @@ export function BuildMonitor({ buildId, onComplete }: BuildMonitorProps) {
     },
   });
 
-  // WebSocket connection for real-time updates
-  const { messages, isConnected } = useWebSocket(buildId);
+  // WebSocket connection for real-time updates (room per build)
+  const { messages, isConnected } = useWebSocket(`build:${buildId}`);
+
+  // Seed initial logs once with tail (no constant polling)
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiClient.builds.logs(buildId, { limit: 200 })
+        if (data?.logs) {
+          setLogs(data.logs.map((l) => l.line))
+        }
+      } catch {}
+    })()
+  }, [buildId])
 
   useEffect(() => {
     messages.forEach((message) => {
+      // Generic progress from WS
       if (message.type === 'progress') {
-        setProgress(message.data as BuildProgress);
-      } else if (message.type === 'status') {
-        const statusData = message.data as { logs?: string };
-        if (statusData.logs) {
-          setLogs((prev) => [...prev, statusData.logs!]);
+        if (message.data && typeof message.data === 'object') {
+          const d = message.data as Partial<BuildProgress>
+          if (typeof d.step === 'string' && typeof d.total === 'number' && typeof d.progress === 'number') {
+            setProgress({
+              step: d.step,
+              total: d.total,
+              progress: d.progress,
+              message: typeof d.message === 'string' ? d.message : '',
+            })
+          }
         }
-      } else if (message.type === 'complete' || message.type === 'error') {
-        refetch();
-        if (onComplete) {
-          onComplete();
+        return
+      }
+      if (message.type === 'status') {
+        const data = message.data as { logs?: string } | null
+        if (data && typeof data.logs === 'string') {
+          setLogs((prev) => [...prev, data.logs])
         }
+        return
+      }
+      // Additional build-specific events emitted by backend
+      const asRecord = message as unknown as Record<string, unknown>
+      if (asRecord.type === 'build_complete' || asRecord.type === 'error') {
+        void refetch()
+        if (onComplete) onComplete()
+        return
+      }
+      if (asRecord.type === 'build_progress') {
+        const step = typeof asRecord["step"] === 'string' ? (asRecord["step"] as string) : ''
+        const total = typeof asRecord["total"] === 'number' ? (asRecord["total"] as number) : 0
+        const msg = typeof asRecord["message"] === 'string' ? (asRecord["message"] as string) : ''
+        const prog = typeof asRecord["progress"] === 'number' ? (asRecord["progress"] as number) : 0
+        setProgress({ step, total, message: msg, progress: prog })
+        return
+      }
+      if (typeof asRecord.line === 'string') {
+        setLogs((prev) => [...prev, String(asRecord.line)])
       }
     });
   }, [messages, refetch, onComplete]);
@@ -109,10 +155,40 @@ export function BuildMonitor({ buildId, onComplete }: BuildMonitorProps) {
                 Live
               </Badge>
             )}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(logs.join('\n'))
+                  toast.success('Logs copied to clipboard')
+                } catch {
+                  toast.error('Failed to copy logs')
+                }
+              }}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Actions (top) */}
+        {(build?.build_status === 'building' || build?.build_status === 'pending') && (
+          <div className="flex gap-2">
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                try {
+                  await apiClient.builds.cancel(buildId)
+                  await refetch()
+                } catch {}
+              }}
+            >
+              Cancel Build
+            </Button>
+          </div>
+        )}
         {/* Progress Bar */}
         {progress && build?.build_status === 'building' && (
           <div className="space-y-2">
@@ -181,15 +257,59 @@ export function BuildMonitor({ buildId, onComplete }: BuildMonitorProps) {
             <Button className="flex-1">
               Deploy Container
             </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={async () => {
+                try {
+                  const result = await apiClient.builds.verifyNodes(buildId, [
+                    'ComfyUI-KJNodes',
+                    'ComfyUI_IPAdapter_plus',
+                    'ComfyUI-GGUF',
+                  ])
+                  setVerifyResult(result)
+                  toast.success(result.ok ? 'Custom nodes verified' : 'Some nodes missing')
+                } catch (e) {
+                  toast.error('Verification failed')
+                }
+              }}
+            >
+              <ShieldCheck className="h-4 w-4 mr-2" /> Verify Nodes
+            </Button>
+          </div>
+        )}
+        {build?.resolved_nodes && build.resolved_nodes.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Installed Custom Nodes</h4>
+            <div className="space-y-1 text-sm">
+              {build.resolved_nodes.map((n, i) => (
+                <div key={`${n.name}-${n.repository}-${i}`} className="flex items-center justify-between border rounded px-2 py-1">
+                  <span>{n.name}</span>
+                  <span className="text-muted-foreground truncate max-w-[70%]">{n.repository}{n.commit ? `@${n.commit}` : ''}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         {build?.build_status === 'failed' && (
-          <Button variant="destructive" className="w-full">
-            Retry Build
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => refetch()}>
+              Refresh
+            </Button>
+          </div>
         )}
       </CardContent>
+      {verifyResult && (
+        <div className="p-4">
+          <h4 className="text-sm font-medium mb-2">Custom Nodes Verification</h4>
+          <div className="text-sm">
+            <p className="mb-1">Expected: {verifyResult.expected?.join(', ') || '-'}</p>
+            <p className="mb-1 text-green-600">Present: {verifyResult.present?.join(', ') || '-'}</p>
+            <p className="mb-1 text-red-600">Missing: {verifyResult.missing?.join(', ') || '-'}</p>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
