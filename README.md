@@ -228,6 +228,28 @@ Environment overrides:
 
 The script forwards `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` to the Next.js dev server.
 
+### Makefile Targets
+
+Common tasks are available via `make`:
+
+```bash
+# Install backend venv + frontend deps
+make install
+
+# Run API + frontend together
+make dev-up
+
+# Run only frontend (using API_HOST/API_PORT)
+make frontend-dev API_HOST=127.0.0.1 API_PORT=8000 FRONTEND_PORT=3000
+
+# Run backend only
+make backend-run API_PORT=8000
+
+# Lint and type-check
+make lint
+make type-check
+```
+
 ## License
 
 MIT
