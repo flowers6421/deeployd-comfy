@@ -1187,7 +1187,7 @@ def api(
     console.print("[yellow]Press CTRL+C to stop[/yellow]")
 
     uvicorn.run(
-        "src.api.workflow_api:app",
+        "src.api.app:app",
         host=host,
         port=port,
         reload=reload,

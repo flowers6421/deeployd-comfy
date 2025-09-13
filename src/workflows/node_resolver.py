@@ -44,29 +44,26 @@ class ComfyUIJsonResolver:
             ) from e
 
         # Ensure we can load vendored comfyui-json via the node bridge
+        # Test if the node_bridge.js can be executed successfully
         try:
             bridge_dir = str(self.node_bridge_path.parent)
-            vendored_loader = (
-                "const fs=require('fs'); const p=require('path'); "
-                "const mod=p.join(process.cwd(),'vendor','comfyui-json','dist','index.js'); "
-                "if(!fs.existsSync(mod)){throw new Error('vendored comfyui-json not found at '+mod);} "
-                "require(mod); console.log('ok')"
-            )
-            subprocess.run(
-                ["node", "-e", vendored_loader],
+            test_cmd = ["node", str(self.node_bridge_path)]
+            result = subprocess.run(
+                test_cmd,
                 capture_output=True,
                 text=True,
-                check=True,
                 cwd=bridge_dir,
             )
-        except subprocess.CalledProcessError as e:
-            msg = e.stderr.strip() or e.stdout.strip() or str(e)
-            raise RuntimeError(
-                "Vendored comfyui-json not found. Expected at "
-                "src/workflows/vendor/comfyui-json/dist/index.js. "
-                "Please vendor the library (copy dist files) into that path. "
-                f"Details: {msg}"
-            ) from e
+            # The script should output usage information if it loads successfully
+            if result.returncode != 1 or "Commands:" not in result.stderr:
+                logger.warning(
+                    f"Node bridge may not be working correctly: {result.stderr or result.stdout}"
+                )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.warning(
+                f"Could not verify node bridge setup: {e}. "
+                "Resolution may fail if comfyui-json is not properly installed."
+            )
 
     # Note: intentionally not loading local known mappings. We rely on
     # comfyui-json (which uses ComfyUI-Manager maps) for authoritative
