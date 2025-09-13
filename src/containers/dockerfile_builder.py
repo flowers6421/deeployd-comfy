@@ -142,7 +142,9 @@ class DockerfileBuilder:
 
         def _safe_dir(name: str) -> str:
             # Replace spaces with underscores and strip problematic characters
-            allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+            allowed = set(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            )
             name = (name or "custom_node").replace(" ", "_")
             # Remove path separators just in case
             name = name.replace("/", "_").replace("\\", "_")
@@ -436,13 +438,15 @@ class DockerfileBuilder:
             tv = (torch_version or "2.7.1").split(".")
             torch_minor = f"{tv[0]}.{tv[1]}" if len(tv) >= 2 else "2.7"
             wheel = nunchaku_wheel_url or (
-                f"https://github.com/nunchaku-tech/nunchaku/releases/download/" \
-                f"{nunchaku_version or 'v0.3.1'}/" \
+                f"https://github.com/nunchaku-tech/nunchaku/releases/download/"
+                f"{nunchaku_version or 'v0.3.1'}/"
                 f"nunchaku-{(nunchaku_version or '0.3.1').lstrip('v')}+torch{torch_minor}-{py_cp}-{py_cp}-linux_x86_64.whl"
             )
             lines.append(f"RUN pip install --no-cache-dir {wheel}")
             lines.append("WORKDIR /app/ComfyUI/custom_nodes")
-            lines.append("RUN git clone https://github.com/mit-han-lab/ComfyUI-nunchaku nunchaku_nodes || true")
+            lines.append(
+                "RUN git clone https://github.com/mit-han-lab/ComfyUI-nunchaku nunchaku_nodes || true"
+            )
             lines.append("WORKDIR /app/ComfyUI")
             lines.append("")
 
@@ -457,7 +461,9 @@ class DockerfileBuilder:
 
             # Helper to sanitize directory names
             def _safe_dir(name: str) -> str:
-                allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+                allowed = set(
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                )
                 name = (name or "custom_node").replace(" ", "_")
                 name = name.replace("/", "_").replace("\\", "_")
                 return "".join(ch for ch in name if ch in allowed) or "custom_node"
@@ -546,12 +552,22 @@ class DockerfileBuilder:
 
         # Shared models volume link
         lines.append("# Shared models volume")
-        lines.append("RUN mkdir -p /models && ln -s /models /app/ComfyUI/models_external || true")
+        lines.append(
+            "RUN mkdir -p /models && ln -s /models /app/ComfyUI/models_external || true"
+        )
         lines.append('VOLUME ["/models"]')
 
         return "\n".join(lines)
 
     def add_model_url_downloads(self, assets: list[dict[str, Any]]) -> list[str]:
+        """Generate Docker RUN commands to download model assets by URL.
+
+        Args:
+            assets: List of dicts with at least {type, filename, url}
+
+        Returns:
+            A list of RUN commands that create folders and wget files
+        """
         if not assets:
             return []
         cmds: list[str] = []

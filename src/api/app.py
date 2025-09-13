@@ -1,12 +1,15 @@
 """FastAPI application for ComfyUI workflow API."""
 
+import asyncio
 import logging
 import time
+import typing as t
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -17,11 +20,11 @@ from src.api.exceptions import APIError
 from src.api.openapi_generator import OpenAPIGenerator
 from src.api.routers import (
     container_router,
+    endpoint_router,
     execution_router,
     model_router,
     workflow_router,
 )
-from src.api.routers import endpoint_router
 from src.api.websocket_manager import WebSocketManager
 
 # Configure logging
@@ -32,7 +35,7 @@ logger = logging.getLogger(__name__)
 APP_START_TIME = datetime.now()
 
 
-class APISettings(BaseModel):
+class APISettings(BaseModel):  # type: ignore[no-any-unimported]
     """API configuration settings."""
 
     api_prefix: str = "/api/v1"
@@ -54,7 +57,7 @@ def get_app_settings() -> APISettings:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
+async def lifespan(app: t.Any) -> AsyncGenerator[None, None]:  # noqa: ARG001
     """Application lifespan manager.
 
     Args:
@@ -68,7 +71,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     logger.info("Shutting down ComfyUI Workflow API...")
 
 
-def create_app() -> FastAPI:
+def create_app() -> t.Any:
     """Create and configure FastAPI application.
 
     Returns:
@@ -100,7 +103,7 @@ def create_app() -> FastAPI:
 
     # Add custom middleware
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next):
+    async def add_process_time_header(request: t.Any, call_next: t.Callable) -> t.Any:
         """Add process time header to responses."""
         start_time = time.time()
         request_id = str(uuid.uuid4())
@@ -119,25 +122,25 @@ def create_app() -> FastAPI:
 
     # Exception handlers
     @app.exception_handler(APIError)
-    async def api_error_handler(request: Request, exc: APIError):  # noqa: ARG001
+    async def api_error_handler(request: t.Any, exc: t.Any) -> t.Any:  # noqa: ARG001
         """Handle API errors."""
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(ValueError)
-    async def value_error_handler(request: Request, exc: ValueError):  # noqa: ARG001
+    async def value_error_handler(request: t.Any, exc: ValueError) -> t.Any:  # noqa: ARG001
         """Handle value errors."""
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     # Health check endpoint
     @app.get("/health")
-    async def health_check():
+    async def health_check() -> dict[str, t.Any]:
         """Health check endpoint."""
         uptime = (datetime.now() - APP_START_TIME).total_seconds()
         return {"status": "healthy", "version": "1.0.0", "uptime": uptime}
 
     # API info endpoint
     @app.get(f"{settings.api_prefix}/info")
-    async def api_info():
+    async def api_info() -> dict[str, t.Any]:
         """Get API information."""
         return {
             "name": "ComfyUI Workflow API",
@@ -153,7 +156,7 @@ def create_app() -> FastAPI:
 
     # WebSocket endpoint supporting rooms (e.g., room=build:{id})
     @app.websocket("/ws/{client_id}")
-    async def ws_endpoint(websocket: WebSocket, client_id: str):
+    async def ws_endpoint(websocket: t.Any, client_id: str) -> None:
         params = dict(websocket.query_params)
         room = params.get("room")
         # connect and keep alive
@@ -170,12 +173,12 @@ def create_app() -> FastAPI:
 
     # OpenAPI spec endpoint
     @app.get(f"{settings.api_prefix}/openapi.json")
-    async def get_openapi_spec():
+    async def get_openapi_spec() -> dict[str, t.Any]:
         """Get OpenAPI specification."""
         generator = OpenAPIGenerator(app)
 
         # Load workflows if available
-        workflows = {}
+        workflows: dict[str, dict[str, t.Any]] = {}
         # TODO: Load actual workflows from configuration or database
 
         spec = generator.generate_full_spec(
@@ -186,7 +189,7 @@ def create_app() -> FastAPI:
 
     # Minimal WebSocket endpoint (stub) to satisfy clients connecting to ws://host/ws/{id}
     @app.websocket("/ws/{client_id}")
-    async def ws_stub(websocket: WebSocket, client_id: str):  # noqa: ARG001
+    async def ws_stub(websocket: t.Any, client_id: str) -> None:  # noqa: ARG001
         await websocket.accept()
         try:
             # Keep connection alive with occasional heartbeat

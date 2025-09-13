@@ -21,6 +21,7 @@ This report provides detailed research and implementation guidance for integrati
 ## Technical Architecture
 
 ### SVDQuant Method
+
 ```
 Stage 1: Original weights and activations contain outliers
 Stage 2: Migrate outliers from activations to weights
@@ -37,6 +38,7 @@ Result: 4-bit quantized model with preserved quality
 ## System Requirements
 
 ### Hardware Requirements
+
 ```json
 {
   "gpu_architectures": [
@@ -54,6 +56,7 @@ Result: 4-bit quantized model with preserved quality
 ```
 
 ### Software Requirements
+
 ```json
 {
   "cuda_version": {
@@ -78,6 +81,7 @@ Result: 4-bit quantized model with preserved quality
 - **Dependencies**: Nunchaku wheel + ComfyUI-nunchaku plugin
 
 ### Key Nodes
+
 ```python
 NUNCHAKU_NODES = {
     "NunchakuFluxDiTLoader": {
@@ -97,6 +101,7 @@ NUNCHAKU_NODES = {
 ```
 
 ### Model Support Matrix
+
 | Model | Format | Speedup | Memory Reduction | Quality |
 |-------|--------|---------|------------------|---------|
 | FLUX.1-dev | 4-bit | 3.0× | 3.6× | Excellent |
@@ -108,6 +113,7 @@ NUNCHAKU_NODES = {
 ## Docker Integration Strategy
 
 ### Option 1: Conditional Installation (Recommended)
+
 ```dockerfile
 # Base ComfyUI installation
 FROM python:3.11-slim as base
@@ -153,6 +159,7 @@ COPY --from=nunchaku-enabled /app /app
 ```
 
 ### Option 2: Multi-Stage Build Optimization
+
 ```dockerfile
 # Stage 1: Base environment
 FROM nvidia/cuda:12.8-runtime-ubuntu22.04 as cuda-base
@@ -175,6 +182,7 @@ FROM nunchaku-stage as final
 ## Implementation Plan
 
 ### Phase 1: Core Integration (Week 1-2)
+
 ```python
 # 1. Add CLI parameter support
 @click.option(
@@ -211,6 +219,7 @@ class NunchakuDockerfileBuilder(DockerfileBuilder):
 ```
 
 ### Phase 2: Advanced Features (Week 3-4)
+
 ```python
 # 3. Workflow analysis for Nunchaku compatibility
 class NunchakuWorkflowAnalyzer:
@@ -235,6 +244,7 @@ class NunchakuModelManager:
 ```
 
 ### Phase 3: Production Features (Week 5-6)
+
 ```python
 # 5. Runtime optimization detection
 class NunchakuRuntimeOptimizer:
@@ -256,6 +266,7 @@ class NunchakuPerformanceMonitor:
 ## Installation Scripts
 
 ### Automated Wheel Installation
+
 ```python
 #!/usr/bin/env python3
 """
@@ -328,6 +339,7 @@ if __name__ == "__main__":
 ```
 
 ### ComfyUI Plugin Installation
+
 ```bash
 #!/bin/bash
 # Install ComfyUI-nunchaku plugin
@@ -363,6 +375,7 @@ echo "ComfyUI-nunchaku plugin installation completed"
 ## Workflow Detection and Optimization
 
 ### Nunchaku Compatibility Analysis
+
 ```python
 class NunchakuCompatibilityAnalyzer:
     """Analyze workflows for Nunchaku acceleration opportunities."""
@@ -427,6 +440,7 @@ class NunchakuCompatibilityAnalyzer:
 ## Performance Optimization Guidelines
 
 ### Container Resource Allocation
+
 ```yaml
 # Docker Compose configuration for Nunchaku-enabled containers
 version: '3.8'
@@ -457,6 +471,7 @@ services:
 ```
 
 ### Environment Variables
+
 ```bash
 # Nunchaku optimization environment variables
 NUNCHAKU_CACHE_DIR=/app/cache/nunchaku
@@ -470,6 +485,7 @@ NUNCHAKU_PRECISION_MODE=fp4  # or int4
 ## Testing and Validation Strategy
 
 ### Test Matrix
+
 | Test Case | Description | Expected Result |
 |-----------|-------------|-----------------|
 | Basic Installation | Install Nunchaku in clean container | Successful installation |
@@ -482,6 +498,7 @@ NUNCHAKU_PRECISION_MODE=fp4  # or int4
 | ControlNet Integration | Test ControlNet workflows | ControlNet functions correctly |
 
 ### Automated Testing Framework
+
 ```python
 class NunchakuTestSuite:
     """Comprehensive test suite for Nunchaku integration."""
@@ -510,6 +527,7 @@ class NunchakuTestSuite:
 ## Error Handling and Troubleshooting
 
 ### Common Issues and Solutions
+
 ```python
 class NunchakuTroubleshooter:
     """Handle common Nunchaku integration issues."""
@@ -550,6 +568,7 @@ class NunchakuTroubleshooter:
 4. **Network Isolation**: Limit network access for Nunchaku processes
 
 ### Safety Checks
+
 ```python
 class NunchakuSafetyValidator:
     """Validate Nunchaku installation and configuration safety."""
@@ -590,6 +609,7 @@ class NunchakuSafetyValidator:
 - [ ] Document configuration and usage
 
 ### Monitoring and Metrics
+
 ```python
 class NunchakuMetricsCollector:
     """Collect performance and usage metrics for Nunchaku."""

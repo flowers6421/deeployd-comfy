@@ -25,4 +25,3 @@ export function GalleryGrid({ executions, onOpen }: { executions: Execution[]; o
     </div>
   )
 }
-

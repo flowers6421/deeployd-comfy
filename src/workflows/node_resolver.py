@@ -3,6 +3,7 @@
 import json
 import logging
 import subprocess
+import typing as t
 from pathlib import Path
 from typing import Any
 
@@ -29,18 +30,18 @@ class ComfyUIJsonResolver:
         # Check if Node.js is available
         self._check_nodejs()
 
-    def _check_nodejs(self):
+    def _check_nodejs(self) -> None:
         """Check if Node.js is available."""
         try:
             result = subprocess.run(
                 ["node", "--version"], capture_output=True, text=True, check=True
             )
             logger.debug(f"Node.js version: {result.stdout.strip()}")
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise RuntimeError(
                 "Node.js is required for comfyui-json resolver. "
                 "Please install Node.js: https://nodejs.org/"
-            )
+            ) from e
 
         # Ensure we can load vendored comfyui-json via the node bridge
         try:
@@ -65,7 +66,7 @@ class ComfyUIJsonResolver:
                 "src/workflows/vendor/comfyui-json/dist/index.js. "
                 "Please vendor the library (copy dist files) into that path. "
                 f"Details: {msg}"
-            )
+            ) from e
 
     # Note: intentionally not loading local known mappings. We rely on
     # comfyui-json (which uses ComfyUI-Manager maps) for authoritative
@@ -102,7 +103,7 @@ class ComfyUIJsonResolver:
                 cwd=str(self.node_bridge_path.parent),
             )
 
-            return json.loads(result.stdout)
+            return t.cast(dict[str, Any], json.loads(result.stdout))
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Node.js bridge error: {e.stderr}")
@@ -115,10 +116,10 @@ class ComfyUIJsonResolver:
                     )
             except json.JSONDecodeError:
                 pass
-            raise RuntimeError(f"Failed to resolve workflow: {e}")
+            raise RuntimeError(f"Failed to resolve workflow: {e}") from e
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse resolver output: {e}")
-            raise RuntimeError(f"Invalid JSON from resolver: {e}")
+            raise RuntimeError(f"Invalid JSON from resolver: {e}") from e
 
     def resolve_node_classes(
         self, node_classes: list[str]
@@ -242,7 +243,7 @@ class ComfyUIJsonResolver:
                     custom_node_classes.add(node_type)
         else:
             # API format
-            for node_id, node_data in workflow_data.items():
+            for _node_id, node_data in workflow_data.items():
                 if isinstance(node_data, dict) and "class_type" in node_data:
                     class_type = node_data["class_type"]
                     if not self._is_builtin_node(class_type):
@@ -269,7 +270,7 @@ class ComfyUIJsonResolver:
 
         # Combine results
         all_resolved = {**manually_resolved}
-        for node_class, info in resolved.items():
+        for _node_class, info in resolved.items():
             if info.get("url"):
                 all_resolved[info["url"]] = info
 
@@ -333,7 +334,7 @@ class ComfyUIJsonResolver:
 
         # Augment with injected extensions inferred from the workflow itself
         try:
-            with open(workflow_path, "r", encoding="utf-8") as f:
+            with open(workflow_path, encoding="utf-8") as f:
                 wf_dict = json.load(f)
             injected = self._infer_injected_extensions(wf_dict)
             for url, meta in injected.items():
@@ -344,7 +345,9 @@ class ComfyUIJsonResolver:
 
         return result
 
-    def _infer_injected_extensions(self, workflow: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    def _infer_injected_extensions(
+        self, workflow: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
         """Infer extension repos that inject behavior into builtin nodes.
 
         Currently detects nonstandard KSampler/KSamplerAdvanced "scheduler" values
@@ -353,8 +356,15 @@ class ComfyUIJsonResolver:
         # Core scheduler values (Comfy core). If a workflow uses a scheduler outside this set,
         # a third-party extension is likely required.
         core_schedulers = {
-            "simple", "sgm_uniform", "karras", "exponential", "ddim_uniform",
-            "beta", "normal", "linear_quadratic", "kl_optimal"
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal",
         }
 
         # Minimal curated mapping for injected scheduler tokens -> repo
@@ -366,7 +376,7 @@ class ComfyUIJsonResolver:
             },
         }
 
-        def iter_nodes_api(api_workflow: dict[str, Any]):
+        def iter_nodes_api(api_workflow: dict[str, Any]) -> t.Iterator[dict[str, Any]]:
             for k, v in api_workflow.items():
                 if k.startswith("_"):
                     continue
@@ -377,6 +387,7 @@ class ComfyUIJsonResolver:
         if "nodes" in workflow and isinstance(workflow["nodes"], list):
             try:
                 from src.workflows.converter import WorkflowConverter
+
                 wf_api = WorkflowConverter().convert(workflow)
             except Exception:
                 wf_api = {}
@@ -390,17 +401,20 @@ class ComfyUIJsonResolver:
                 continue
             inputs = node.get("inputs", {}) or {}
             sched = inputs.get("scheduler")
-            if isinstance(sched, str) and sched and sched not in core_schedulers:
-                # Map token or prefix to repo
-                if sched in injected_map:
-                    info = injected_map[sched]
-                    required[info["url"]] = {
-                        "url": info["url"],
-                        "name": info.get("name", info["url"].rsplit("/", 1)[-1]),
-                        "hash": None,
-                        "pip": [],
-                        "files": [],
-                        "install_type": "git-clone",
-                        "warning": "Inferred from scheduler value",
-                    }
+            if (
+                isinstance(sched, str)
+                and sched
+                and sched not in core_schedulers
+                and sched in injected_map
+            ):
+                info = injected_map[sched]
+                required[info["url"]] = {
+                    "url": info["url"],
+                    "name": info.get("name", info["url"].rsplit("/", 1)[-1]),
+                    "hash": None,
+                    "pip": [],
+                    "files": [],
+                    "install_type": "git-clone",
+                    "warning": "Inferred from scheduler value",
+                }
         return required

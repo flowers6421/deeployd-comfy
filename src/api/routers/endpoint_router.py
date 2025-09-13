@@ -1,42 +1,47 @@
 """API Endpoint configuration router for per-workflow OpenAPI mapping."""
 
-from typing import Any, Optional
+import typing as t
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import select
 
+from src.api.generator import WorkflowAPIGenerator
 from src.db.database import init_db
 from src.db.models import APIEndpoint
 from src.db.repositories import WorkflowRepository
-from src.api.generator import WorkflowAPIGenerator
-from sqlmodel import select
 
 router = APIRouter()
 
 db = init_db()
 
 
-def get_session():
+def get_session() -> t.Generator[Any, None, None]:
+    """Yield a database session for request lifetime."""
     with db.get_session() as session:
         yield session
 
 
-class ParameterConfig(BaseModel):
+class ParameterConfig(BaseModel):  # type: ignore[no-any-unimported]
+    """Describes a single request parameter for an endpoint."""
+
     name: str
     type: str
-    description: Optional[str] = None
+    description: str | None = None
     required: bool = False
     default: Any = None
     enum: list[Any] | None = None
     minimum: float | None = None
     maximum: float | None = None
     # Optional mapping back to workflow
-    node_id: Optional[str] = None
-    input_field: Optional[str] = None
+    node_id: str | None = None
+    input_field: str | None = None
 
 
-class EndpointConfigPayload(BaseModel):
+class EndpointConfigPayload(BaseModel):  # type: ignore[no-any-unimported]
+    """Payload for setting a workflow's API endpoint configuration."""
+
     path: str = "/generate"
     method: str = "POST"
     is_public: bool = False
@@ -47,7 +52,9 @@ class EndpointConfigPayload(BaseModel):
 
 
 @router.get("/workflows/{workflow_id}/openapi-config")
-async def get_openapi_config(workflow_id: str, session: Session = Depends(get_session)):
+async def get_openapi_config(
+    workflow_id: str, session: Any = Depends(get_session)
+) -> dict[str, Any]:
     """Return stored endpoint config if any; otherwise generate defaults."""
     wrepo = WorkflowRepository(session)
     wf = wrepo.get(workflow_id)
@@ -55,7 +62,9 @@ async def get_openapi_config(workflow_id: str, session: Session = Depends(get_se
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     # Fetch stored endpoint (first one per workflow)
-    ep = session.exec(select(APIEndpoint).where(APIEndpoint.workflow_id == workflow_id)).first()
+    ep = session.exec(
+        select(APIEndpoint).where(APIEndpoint.workflow_id == workflow_id)
+    ).first()
 
     if ep:
         return {
@@ -107,15 +116,18 @@ async def get_openapi_config(workflow_id: str, session: Session = Depends(get_se
 async def set_openapi_config(
     workflow_id: str,
     payload: EndpointConfigPayload,
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> dict[str, str]:
+    """Persist or update an endpoint configuration for the given workflow."""
     wrepo = WorkflowRepository(session)
     wf = wrepo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     # Upsert per workflow (single endpoint)
-    ep = session.exec(select(APIEndpoint).where(APIEndpoint.workflow_id == workflow_id)).first()
+    ep = session.exec(
+        select(APIEndpoint).where(APIEndpoint.workflow_id == workflow_id)
+    ).first()
     if not ep:
         ep = APIEndpoint(
             workflow_id=workflow_id,
@@ -140,4 +152,3 @@ async def set_openapi_config(
     session.commit()
     session.refresh(ep)
     return {"status": "ok"}
-

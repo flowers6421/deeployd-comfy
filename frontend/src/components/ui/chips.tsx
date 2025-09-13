@@ -13,4 +13,3 @@ export function CommitChip({ commit }: { commit?: string }) {
   if (!commit) return null
   return <Badge variant="outline" className="text-xs">{commit.slice(0,7)}</Badge>
 }
-

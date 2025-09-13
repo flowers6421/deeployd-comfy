@@ -3,20 +3,28 @@
 Integrates with ComfyUI via the WorkflowExecutor when creating executions.
 """
 
-from typing import Any
+import asyncio
 import os
 import threading
-import asyncio
+import typing as t
+from contextlib import suppress
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlmodel import Session
 
 from src.api import event_bus
-from src.db.database import init_db
-from src.db.repositories import ExecutionRepository, WorkflowRepository, BuildRepository
 from src.api.workflow_executor import WorkflowExecutor
+from src.db.database import init_db
+from src.db.repositories import (
+    BuildRepository,
+    ExecutionRepository,
+    WorkflowRepository,
+)
+from src.db.repositories import (
+    SessionLike as RepoSessionLike,
+)
 from src.workflows.converter import WorkflowConverter
 
 router = APIRouter()
@@ -24,7 +32,8 @@ router = APIRouter()
 db = init_db()
 
 
-def get_session():
+def get_session() -> t.Generator[Any, None, None]:
+    """Yield a database session for request lifetime."""
     with db.get_session() as session:
         yield session
 
@@ -32,13 +41,16 @@ def get_session():
 @router.get("/")
 async def list_executions(
     limit: int = Query(default=50, ge=1, le=500),
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> list[Any]:
+    """List recent workflow executions."""
     repo = ExecutionRepository(session)
     return repo.list(limit=limit)
 
 
-class ExecutionCreateRequest(BaseModel):
+class ExecutionCreateRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request payload to start an execution for a workflow."""
+
     workflow_id: str
     parameters: dict[str, Any] | None = None
 
@@ -46,8 +58,9 @@ class ExecutionCreateRequest(BaseModel):
 @router.post("/")
 async def create_execution(
     payload: ExecutionCreateRequest,
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> Any:
+    """Create a new workflow execution and run it in the background."""
     repo = ExecutionRepository(session)
     wrepo = WorkflowRepository(session)
     wf = wrepo.get(payload.workflow_id)
@@ -65,7 +78,13 @@ async def create_execution(
     # Emit pending status
     try:
         import anyio
-        anyio.run(event_bus.emit_execution_event, execution.id, "execution_status", {"status": "pending"})
+
+        anyio.run(
+            event_bus.emit_execution_event,
+            execution.id,
+            "execution_status",
+            {"status": "pending"},
+        )
     except Exception:
         pass
 
@@ -73,7 +92,7 @@ async def create_execution(
     env_url = os.getenv("COMFYUI_URL")
 
     # Run actual execution in background thread (non-blocking for API)
-    def _run():
+    def _run() -> None:
         local_db = init_db()
         try:
             # Determine ComfyUI base URL
@@ -83,10 +102,15 @@ async def create_execution(
                 comfy_base = _ensure_comfy_service(local_db, payload.workflow_id)
 
             parsed = urlparse(comfy_base)
-            ex = WorkflowExecutor(comfyui_host=parsed.hostname or "127.0.0.1", comfyui_port=parsed.port or 8188)
+            ex = WorkflowExecutor(
+                comfyui_host=parsed.hostname or "127.0.0.1",
+                comfyui_port=parsed.port or 8188,
+            )
             # Load workflow fresh inside this thread to avoid detached instance
             with local_db.get_session() as s1:
-                wf_obj = WorkflowRepository(s1).get(payload.workflow_id)
+                wf_obj = WorkflowRepository(t.cast(RepoSessionLike, s1)).get(
+                    payload.workflow_id
+                )
                 if not wf_obj:
                     raise RuntimeError("Workflow not found")
                 wf_def_raw = wf_obj.definition or {}
@@ -96,8 +120,9 @@ async def create_execution(
             except Exception:
                 wf_api = wf_def_raw
             injected = ex.inject_parameters(wf_api, payload.parameters or {})
+
             # Submit and wait for completion
-            async def _do():
+            async def _do() -> tuple[str, dict[str, Any]]:
                 prompt_id = await ex.submit_workflow(injected)
                 return prompt_id, await ex.wait_for_completion(prompt_id, timeout=600.0)
 
@@ -105,7 +130,7 @@ async def create_execution(
 
             # Update execution as running -> completed/failed
             with local_db.get_session() as s2:
-                erepo = ExecutionRepository(s2)
+                erepo = ExecutionRepository(t.cast(RepoSessionLike, s2))
                 current = erepo.get(execution.id)
                 if not current:
                     return
@@ -114,16 +139,17 @@ async def create_execution(
                 current.status = status
                 if status == "failed":
                     # Capture an error message if available
-                    err = result.get("error") or result.get("messages") or result.get("detail")
-                    try:
+                    err = (
+                        result.get("error")
+                        or result.get("messages")
+                        or result.get("detail")
+                    )
+                    with suppress(Exception):
                         current.error_message = (
-                            err if isinstance(err, str) else ("; ".join(err) if isinstance(err, list) else str(err))
+                            err
+                            if isinstance(err, str)
+                            else ("; ".join(err) if isinstance(err, list) else str(err))
                         )
-                    except Exception:
-                        try:
-                            current.error_message = str(err)
-                        except Exception:
-                            pass
                 # Capture produced images if available
                 outputs = []
                 imgs = result.get("images") or []
@@ -136,37 +162,51 @@ async def create_execution(
                             outputs.append(str(item["url"]))
                 current.output_files = outputs
                 from datetime import datetime as _dt
+
                 current.completed_at = _dt.utcnow()
                 # execution_time may be included in result
                 et = result.get("time") or result.get("execution_time")
-                try:
+                with suppress(Exception):
                     current.execution_time = float(et) if et is not None else None
-                except Exception:
-                    pass
-                s2.add(current)
-                s2.commit()
-                s2.refresh(current)
+                s2r = t.cast(RepoSessionLike, s2)
+                s2r.add(current)
+                s2r.commit()
+                s2r.refresh(current)
                 # Emit event
                 try:
                     import anyio
-                    anyio.run(event_bus.emit_execution_event, current.id, "execution_status", {"status": current.status})
+
+                    anyio.run(
+                        event_bus.emit_execution_event,
+                        current.id,
+                        "execution_status",
+                        {"status": current.status},
+                    )
                 except Exception:
                     pass
         except Exception as e:  # update as failed
             with local_db.get_session() as s2:
-                erepo = ExecutionRepository(s2)
+                erepo = ExecutionRepository(t.cast(RepoSessionLike, s2))
                 current = erepo.get(execution.id)
                 if not current:
                     return
                 current.status = "failed"
                 current.error_message = str(e)
                 from datetime import datetime as _dt
+
                 current.completed_at = _dt.utcnow()
-                s2.add(current)
-                s2.commit()
+                s2r = t.cast(RepoSessionLike, s2)
+                s2r.add(current)
+                s2r.commit()
                 try:
                     import anyio
-                    anyio.run(event_bus.emit_execution_event, current.id, "execution_status", {"status": "failed"})
+
+                    anyio.run(
+                        event_bus.emit_execution_event,
+                        current.id,
+                        "execution_status",
+                        {"status": "failed"},
+                    )
                 except Exception:
                     pass
 
@@ -175,7 +215,7 @@ async def create_execution(
     return execution
 
 
-def _ensure_comfy_service(local_db, workflow_id: str) -> str:
+def _ensure_comfy_service(local_db: Any, workflow_id: str) -> str:
     """Ensure a ComfyUI container for the workflow is running and reachable on localhost.
 
     Starts a container from the latest successful build if not running. Binds 8188/tcp to a free host port.
@@ -183,23 +223,28 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
     Returns the base URL (e.g., http://127.0.0.1:49188)
     """
     from time import sleep, time
+
     try:
-        import docker  # type: ignore
+        import docker
     except Exception as e:  # pragma: no cover
-        raise RuntimeError(f"Docker SDK not available: {e}")
+        raise RuntimeError(f"Docker SDK not available: {e}") from e
 
     with local_db.get_session() as s:
         brepo = BuildRepository(s)
         build = brepo.get_latest_successful_build(workflow_id)
         if not build:
-            raise RuntimeError("No successful container build found for this workflow. Build the container first.")
+            raise RuntimeError(
+                "No successful container build found for this workflow. Build the container first."
+            )
 
     client = docker.from_env()
     label_key = "comfy.workflow_id"
     label_val = workflow_id
 
     # Try to find existing containers for this workflow
-    containers = client.containers.list(all=True, filters={"label": f"{label_key}={label_val}"})
+    containers = client.containers.list(
+        all=True, filters={"label": f"{label_key}={label_val}"}
+    )
     desired_image = f"{build.image_name}:{build.tag}"
 
     # Select a candidate container that already uses the latest image and is running
@@ -207,20 +252,20 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
     for c in containers:
         try:
             c.reload()
-            tags = (c.image.tags or [])
+            tags = c.image.tags or []
             if desired_image in tags and c.status == "running":
                 container = c
                 break
         except Exception:
             pass
 
-    def _host_port(c) -> str | None:
+    def _host_port(c: Any) -> str | None:
         try:
             c.reload()
             ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
             mapping = ports.get("8188/tcp")
             if mapping and len(mapping) > 0:
-                return mapping[0].get("HostPort")
+                return t.cast(str | None, mapping[0].get("HostPort"))
         except Exception:
             pass
         return None
@@ -231,21 +276,16 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
         if hp:
             return f"http://127.0.0.1:{hp}"
         # No port mapping; recreate with mapping
-        try:
+        with suppress(Exception):
             container.stop(timeout=3)
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             container.remove()
-        except Exception:
-            pass
         container = None
 
     if not container:
         image = desired_image
         # Bind to random free host port
         ports = {"8188/tcp": ("127.0.0.1", None)}
-        name = f"comfy_{workflow_id[:8]}"
         container = client.containers.run(
             image=image,
             detach=True,
@@ -255,17 +295,15 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
 
         # Stop and remove any other stale containers for this workflow
         try:
-            others = client.containers.list(all=True, filters={"label": f"{label_key}={label_val}"})
+            others = client.containers.list(
+                all=True, filters={"label": f"{label_key}={label_val}"}
+            )
             for oc in others:
                 if oc.id != container.id:
-                    try:
+                    with suppress(Exception):
                         oc.stop(timeout=2)
-                    except Exception:
-                        pass
-                    try:
+                    with suppress(Exception):
                         oc.remove()
-                    except Exception:
-                        pass
         except Exception:
             pass
 
@@ -277,10 +315,16 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
         if host_port:
             # Simple HTTP GET ping without asyncio to avoid warnings
             try:
-                import urllib.request
-                with urllib.request.urlopen(f"http://127.0.0.1:{host_port}", timeout=1.5) as resp:
-                    if 200 <= resp.status < 500:
-                        return f"http://127.0.0.1:{host_port}"
+                import http.client
+
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", int(host_port), timeout=1.5
+                )
+                conn.request("GET", "/")
+                resp = conn.getresponse()
+                if 200 <= resp.status < 500:
+                    return f"http://127.0.0.1:{host_port}"
+                conn.close()
             except Exception:
                 pass
         # Check if container exited with error; surface logs
@@ -308,10 +352,15 @@ def _ensure_comfy_service(local_db, workflow_id: str) -> str:
             raise RuntimeError("ComfyUI container exited during startup.\n" + logs)
     except Exception:
         pass
-    raise RuntimeError("ComfyUI container failed to expose port 8188 on host within timeout")
+    raise RuntimeError(
+        "ComfyUI container failed to expose port 8188 on host within timeout"
+    )
+
 
 @router.get("/{execution_id}/container/logs")
-async def get_execution_container_logs(execution_id: str, tail: int = 200, session: Session = Depends(get_session)):
+async def get_execution_container_logs(
+    execution_id: str, tail: int = 200, session: Any = Depends(get_session)
+) -> dict[str, Any]:
     """Fetch recent logs from the ComfyUI container associated with this workflow execution.
 
     Uses the workflow label to select the container that serves executions for that workflow.
@@ -321,10 +370,13 @@ async def get_execution_container_logs(execution_id: str, tail: int = 200, sessi
     if not e:
         return {"logs": "", "detail": "Execution not found"}
     try:
-        import docker  # type: ignore
+        import docker
+
         client = docker.from_env()
         label_key = "comfy.workflow_id"
-        containers = client.containers.list(all=True, filters={"label": f"{label_key}={e.workflow_id}"})
+        containers = client.containers.list(
+            all=True, filters={"label": f"{label_key}={e.workflow_id}"}
+        )
         if not containers:
             return {"logs": "", "detail": "No container found for workflow"}
         logs = containers[0].logs(tail=tail).decode("utf-8", errors="ignore")
@@ -334,13 +386,14 @@ async def get_execution_container_logs(execution_id: str, tail: int = 200, sessi
 
 
 @router.get("/comfy/resolve")
-async def resolve_comfy_url(workflow_id: str, start: bool = True):
+async def resolve_comfy_url(workflow_id: str, start: bool = True) -> dict[str, Any]:
     """Resolve the ComfyUI base URL for a workflow.
 
     If COMFYUI_URL is set, returns it. Otherwise, if start=true, ensures a container
     is running for this workflow and returns the mapped localhost URL.
     """
     import os
+
     env_url = os.getenv("COMFYUI_URL")
     if env_url:
         return {"base_url": env_url, "source": "env"}
@@ -348,17 +401,23 @@ async def resolve_comfy_url(workflow_id: str, start: bool = True):
     if not start:
         # Try to find an already running container
         try:
-            import docker  # type: ignore
+            import docker
+
             client = docker.from_env()
             label_key = "comfy.workflow_id"
-            containers = client.containers.list(all=True, filters={"label": f"{label_key}={workflow_id}"})
+            containers = client.containers.list(
+                all=True, filters={"label": f"{label_key}={workflow_id}"}
+            )
             if containers:
                 c = containers[0]
                 c.reload()
                 ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
                 m = ports.get("8188/tcp")
                 if m and len(m) > 0:
-                    return {"base_url": f"http://127.0.0.1:{m[0].get('HostPort')}", "source": "container"}
+                    return {
+                        "base_url": f"http://127.0.0.1:{m[0].get('HostPort')}",
+                        "source": "container",
+                    }
         except Exception:
             pass
         return {"base_url": None, "source": "none"}
@@ -370,13 +429,16 @@ async def resolve_comfy_url(workflow_id: str, start: bool = True):
 
 
 @router.get("/comfy/status")
-async def comfy_status(workflow_id: str):
+async def comfy_status(workflow_id: str) -> dict[str, Any]:
     """Return details about containers for this workflow and which image/tag they run."""
     try:
-        import docker  # type: ignore
+        import docker
+
         client = docker.from_env()
         label_key = "comfy.workflow_id"
-        containers = client.containers.list(all=True, filters={"label": f"{label_key}={workflow_id}"})
+        containers = client.containers.list(
+            all=True, filters={"label": f"{label_key}={workflow_id}"}
+        )
         out = []
         for c in containers:
             try:
@@ -384,13 +446,15 @@ async def comfy_status(workflow_id: str):
                 ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
                 m = ports.get("8188/tcp")
                 host_port = m[0].get("HostPort") if m else None
-                out.append({
-                    "id": c.id,
-                    "name": c.name,
-                    "status": c.status,
-                    "image": (c.image.tags or [c.image.id])[0],
-                    "host_port": host_port,
-                })
+                out.append(
+                    {
+                        "id": c.id,
+                        "name": c.name,
+                        "status": c.status,
+                        "image": (c.image.tags or [c.image.id])[0],
+                        "host_port": host_port,
+                    }
+                )
             except Exception:
                 pass
         return {"containers": out}
@@ -399,24 +463,23 @@ async def comfy_status(workflow_id: str):
 
 
 @router.post("/comfy/restart")
-async def comfy_restart(workflow_id: str):
+async def comfy_restart(workflow_id: str) -> dict[str, Any]:
     """Force restart the ComfyUI container for a workflow using its latest built image."""
     local_db = init_db()
     # Stop/remove all existing labeled containers, then ensure service
     try:
-        import docker  # type: ignore
+        import docker
+
         client = docker.from_env()
         label_key = "comfy.workflow_id"
-        containers = client.containers.list(all=True, filters={"label": f"{label_key}={workflow_id}"})
+        containers = client.containers.list(
+            all=True, filters={"label": f"{label_key}={workflow_id}"}
+        )
         for c in containers:
-            try:
+            with suppress(Exception):
                 c.stop(timeout=2)
-            except Exception:
-                pass
-            try:
+            with suppress(Exception):
                 c.remove()
-            except Exception:
-                pass
     except Exception:
         pass
 
@@ -429,14 +492,15 @@ async def comfy_restart(workflow_id: str):
 
 
 @router.get("/{execution_id}")
-async def get_execution(execution_id: str, session: Session = Depends(get_session)):
+async def get_execution(execution_id: str, session: Any = Depends(get_session)) -> Any:
+    """Fetch a single execution by ID."""
     repo = ExecutionRepository(session)
     result = repo.get(execution_id)
     return result or {"detail": "Not found"}
 
 
 @router.post("/cleanup")
-async def cleanup_executions(session: Session = Depends(get_session)):
+async def cleanup_executions(session: Any = Depends(get_session)) -> dict[str, int]:
     """Cancel all pending/running executions."""
     repo = ExecutionRepository(session)
     count = repo.cancel_all()
@@ -444,7 +508,10 @@ async def cleanup_executions(session: Session = Depends(get_session)):
 
 
 @router.post("/{execution_id}/cancel")
-async def cancel_execution(execution_id: str, session: Session = Depends(get_session)):
+async def cancel_execution(
+    execution_id: str, session: Any = Depends(get_session)
+) -> dict[str, Any]:
+    """Cancel a running/pending execution by ID."""
     repo = ExecutionRepository(session)
     exe = repo.get(execution_id)
     if not exe:
@@ -468,4 +535,4 @@ async def cancel_execution(execution_id: str, session: Session = Depends(get_ses
             )
         except Exception:
             pass
-    return exe
+    return {"status": "cancelled", "execution_id": execution_id}

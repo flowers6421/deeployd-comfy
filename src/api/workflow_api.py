@@ -1,26 +1,35 @@
 """FastAPI application for workflow execution with queue and worker management."""
 
 import asyncio
-import os
 import logging
-from pathlib import Path
-from typing import Optional, Dict, Any
+import os
+import tempfile
+import typing as t
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 import uvicorn
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    WebSocketDisconnect,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
-from src.api.workflow_executor import WorkflowExecutor, WorkflowRequest, WorkflowResponse
-from src.api.task_queue import TaskQueueManager, Task, TaskPriority
-from src.api.task_executor import TaskExecutor
-from src.api.worker_service import WorkerService
-from src.api.websocket_manager import WebSocketManager
 from src.api.resource_monitor import ResourceMonitor
 from src.api.routers.workflow_router import router as workflow_router
+from src.api.task_executor import TaskExecutor
+from src.api.task_queue import Task, TaskPriority, TaskQueueManager
+from src.api.websocket_manager import WebSocketManager
+from src.api.worker_service import WorkerService
+from src.api.workflow_executor import (
+    WorkflowExecutor,
+    WorkflowRequest,
+    WorkflowResponse,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,40 +37,44 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: Any) -> t.AsyncIterator[None]:
     """Manage application lifecycle."""
     # Startup
     logger.info("Starting Workflow API Server with Queue and Worker Management")
-    
+
     # Initialize components
     workflow_path = os.getenv("WORKFLOW_PATH")
     if workflow_path and not os.path.exists(workflow_path):
         logger.warning(f"Workflow path {workflow_path} does not exist, ignoring")
         workflow_path = None
-    
+
     app.state.workflow_executor = WorkflowExecutor(
         comfyui_host=os.getenv("COMFYUI_HOST", "localhost"),
         comfyui_port=int(os.getenv("COMFYUI_PORT", "8188")),
         workflow_path=workflow_path,
-        output_dir=os.getenv("OUTPUT_DIR", "/tmp/outputs")
+        output_dir=os.getenv(
+            "OUTPUT_DIR", os.path.join(tempfile.gettempdir(), "outputs")
+        ),
     )
-    
+
     # Initialize queue manager
     app.state.queue_manager = TaskQueueManager(
-        queue_path=os.getenv("QUEUE_PATH", "/tmp/task_queue.db"),
-        max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "1000"))
+        queue_path=os.getenv(
+            "QUEUE_PATH", os.path.join(tempfile.gettempdir(), "task_queue.db")
+        ),
+        max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "1000")),
     )
-    
+
     # Initialize WebSocket manager
     app.state.websocket_manager = WebSocketManager(
         max_connections=int(os.getenv("MAX_WS_CONNECTIONS", "100"))
     )
-    
+
     # Initialize resource monitor
     app.state.resource_monitor = ResourceMonitor(
         output_dir=os.getenv("OUTPUT_DIR", "/app/outputs")
     )
-    
+
     # Initialize task executor
     app.state.task_executor = TaskExecutor(
         queue_manager=app.state.queue_manager,
@@ -69,9 +82,9 @@ async def lifespan(app: FastAPI):
         websocket_manager=app.state.websocket_manager,
         resource_monitor=app.state.resource_monitor,
         max_concurrent_tasks=int(os.getenv("MAX_CONCURRENT_TASKS", "2")),
-        default_timeout=float(os.getenv("TASK_TIMEOUT", "300.0"))
+        default_timeout=float(os.getenv("TASK_TIMEOUT", "300.0")),
     )
-    
+
     # Initialize worker service
     app.state.worker_service = WorkerService(
         queue_manager=app.state.queue_manager,
@@ -80,24 +93,24 @@ async def lifespan(app: FastAPI):
         config={
             "min_workers": int(os.getenv("MIN_WORKERS", "1")),
             "max_workers": int(os.getenv("MAX_WORKERS", "4")),
-            "scale_threshold": int(os.getenv("SCALE_THRESHOLD", "5"))
-        }
+            "scale_threshold": int(os.getenv("SCALE_THRESHOLD", "5")),
+        },
     )
-    
+
     # Start worker service in background
     app.state.worker_task = asyncio.create_task(app.state.worker_service.start())
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Workflow API Server")
-    
+
     # Stop worker service
-    if hasattr(app.state, 'worker_service'):
+    if hasattr(app.state, "worker_service"):
         await app.state.worker_service.stop()
-    
+
     # Cleanup resources
-    if hasattr(app.state, 'task_executor'):
+    if hasattr(app.state, "task_executor"):
         app.state.task_executor.cleanup_resources()
 
 
@@ -106,7 +119,7 @@ app = FastAPI(
     title="ComfyUI Workflow API",
     description="REST API for executing ComfyUI workflows with parameter injection",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -121,20 +134,22 @@ app.add_middleware(
 # Mount routers
 app.include_router(workflow_router, prefix="/api/workflows", tags=["workflows"])
 
+
 # Temporary stub endpoints for builds and executions
 @app.get("/api/builds")
-async def list_builds():
+async def list_builds() -> list[Any]:
     """Temporary stub for builds endpoint."""
     return []
 
+
 @app.get("/api/executions")
-async def list_executions():
+async def list_executions() -> list[Any]:
     """Temporary stub for executions endpoint."""
     return []
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     """Root endpoint with API information."""
     return {
         "name": "ComfyUI Workflow API with Queue Management",
@@ -145,31 +160,23 @@ async def root():
                 "status": "/api/status/{prompt_id}",
                 "cancel": "/api/cancel/{prompt_id}",
                 "image": "/api/images/{filename}",
-                "websocket": "/ws/{prompt_id}"
+                "websocket": "/ws/{prompt_id}",
             },
-            "queue": {
-                "status": "/api/queue/status",
-                "task": "/api/queue/{task_id}"
-            },
+            "queue": {"status": "/api/queue/status", "task": "/api/queue/{task_id}"},
             "workers": {
                 "status": "/api/workers/status",
                 "pause": "/api/workers/pause",
                 "resume": "/api/workers/resume",
-                "scale": "/api/workers/scale"
+                "scale": "/api/workers/scale",
             },
-            "resources": {
-                "status": "/api/resources/status"
-            },
-            "system": {
-                "health": "/health",
-                "docs": "/docs"
-            }
-        }
+            "resources": {"status": "/api/resources/status"},
+            "system": {"health": "/health", "docs": "/docs"},
+        },
     }
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, Any]:
     """Health check endpoint."""
     return {"status": "healthy", "service": "workflow-api"}
 
@@ -177,144 +184,148 @@ async def health_check():
 @app.post("/api/generate", response_model=WorkflowResponse)
 async def generate_image(
     request: WorkflowRequest,
-    background_tasks: BackgroundTasks,
+    _background_tasks: Any,
     wait: bool = True,
-    priority: str = "normal"
-):
+    priority: str = "normal",
+) -> WorkflowResponse:
     """Generate image from workflow with parameters using task queue.
-    
+
     Args:
         request: Workflow parameters
         wait: Whether to wait for completion (default: True)
         priority: Task priority (high/normal/low, default: normal)
-        
+
     Returns:
         WorkflowResponse with status and images
     """
     queue_manager = app.state.queue_manager
     workflow_executor = app.state.workflow_executor
-    
+
     # Convert request to dict
     parameters = request.dict(exclude_unset=True)
-    
+
     # Handle random seed
     if parameters.get("seed", -1) == -1:
         import random
+
         parameters["seed"] = random.randint(0, 2**32 - 1)
-    
+
     # Prepare workflow
     workflow = workflow_executor.inject_parameters(
-        workflow_executor.workflow_template,
-        parameters
+        workflow_executor.workflow_template, parameters
     )
-    
+
     # Map priority string to enum
     priority_map = {
         "high": TaskPriority.HIGH,
         "normal": TaskPriority.NORMAL,
-        "low": TaskPriority.LOW
+        "low": TaskPriority.LOW,
     }
     task_priority = priority_map.get(priority.lower(), TaskPriority.NORMAL)
-    
+
     # Generate prompt ID
     import uuid
+
     prompt_id = str(uuid.uuid4())
-    
+
     # Create task
     task = Task(
         task_id=f"task-{prompt_id}",
         prompt_id=prompt_id,
         workflow_data=workflow,
         parameters=parameters,
-        priority=task_priority
+        priority=task_priority,
     )
-    
+
     # Enqueue task
     queue_manager.enqueue_task(task)
     logger.info(f"Enqueued task {task.task_id} with priority {priority}")
-    
+
     try:
         if wait:
             # Wait for task completion
             timeout = 300.0
             start_time = asyncio.get_event_loop().time()
-            
+
             while asyncio.get_event_loop().time() - start_time < timeout:
                 task = queue_manager.get_task_status(task.task_id)
-                
+
                 if task and task.status.value == "completed":
                     # Get result from task
                     result = task.result or {}
                     return WorkflowResponse(
                         prompt_id=prompt_id,
                         status="completed",
-                        images=result.get("images", [])
+                        images=result.get("images", []),
                     )
                 elif task and task.status.value == "failed":
                     raise HTTPException(
-                        status_code=500,
-                        detail=f"Task failed: {task.error}"
+                        status_code=500, detail=f"Task failed: {task.error}"
                     )
-                
+
                 await asyncio.sleep(1.0)
-            
+
             # Timeout
             raise HTTPException(status_code=408, detail="Task execution timeout")
-            
+
         else:
             # Return immediately with task ID
             return WorkflowResponse(
-                prompt_id=prompt_id,
-                status="queued",
-                task_id=task.task_id
+                prompt_id=prompt_id, status="queued", task_id=task.task_id
             )
-    
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/status/{prompt_id}")
-async def get_status(prompt_id: str):
+async def get_status(prompt_id: str) -> dict[str, Any]:
     """Get workflow execution status from queue.
-    
+
     Args:
         prompt_id: Prompt ID to check
-        
+
     Returns:
         Status information
     """
     queue_manager = app.state.queue_manager
     workflow_executor = app.state.workflow_executor
-    
+
     try:
         # Try to find task by prompt_id
         task_id = f"task-{prompt_id}"
         task = queue_manager.get_task_status(task_id)
-        
+
         if task:
             response = {
                 "prompt_id": prompt_id,
                 "task_id": task_id,
                 "status": task.status.value,
-                "created_at": datetime.fromtimestamp(task.created_at).isoformat() if task.created_at else None,
-                "started_at": datetime.fromtimestamp(task.started_at).isoformat() if task.started_at else None,
-                "completed_at": datetime.fromtimestamp(task.completed_at).isoformat() if task.completed_at else None,
+                "created_at": datetime.fromtimestamp(task.created_at).isoformat()
+                if task.created_at
+                else None,
+                "started_at": datetime.fromtimestamp(task.started_at).isoformat()
+                if task.started_at
+                else None,
+                "completed_at": datetime.fromtimestamp(task.completed_at).isoformat()
+                if task.completed_at
+                else None,
                 "retry_count": task.retry_count,
-                "error_message": task.error
+                "error_message": task.error,
             }
-            
+
             # Add images if completed
             if task.status.value == "completed" and task.result:
                 response["images"] = task.result.get("images", [])
-            
+
             return response
         else:
             # Fallback to direct ComfyUI status check
             status = await workflow_executor.get_status(prompt_id)
-            
+
             # Add images if completed
             if status.get("status") == "completed":
                 try:
@@ -322,62 +333,58 @@ async def get_status(prompt_id: str):
                     status["images"] = images
                 except Exception as e:
                     logger.error(f"Error getting images: {e}")
-            
-            return status
-    
+
+            return t.cast(dict[str, Any], status)
+
     except Exception as e:
         logger.error(f"Status check error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/images/{filename}")
-async def get_image(filename: str):
+async def get_image(filename: str) -> Any:
     """Serve generated images.
-    
+
     Args:
         filename: Image filename
-        
+
     Returns:
         Image file
     """
     output_dir = Path(os.getenv("OUTPUT_DIR", "/app/outputs"))
     image_path = output_dir / filename
-    
+
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
-    
-    return FileResponse(
-        path=image_path,
-        media_type="image/png",
-        filename=filename
-    )
+
+    return FileResponse(path=image_path, media_type="image/png", filename=filename)
 
 
 @app.websocket("/ws/{prompt_id}")
-async def websocket_progress(websocket: WebSocket, prompt_id: str):
-    """WebSocket endpoint for real-time progress updates.
-    
+async def websocket_progress(websocket: Any, prompt_id: str) -> None:
+    """Websocket endpoint for real-time progress updates.
+
     Args:
         websocket: WebSocket connection
         prompt_id: Prompt ID to monitor
     """
     await websocket.accept()
-    
+
     queue_manager = app.state.queue_manager
     websocket_manager = app.state.websocket_manager
     workflow_executor = app.state.workflow_executor
-    
+
     # Register connection with WebSocket manager
     client_id = f"client-{prompt_id}"
     await websocket_manager.connect(websocket, client_id, prompt_id=prompt_id)
-    
+
     try:
         task_id = f"task-{prompt_id}"
-        
+
         # Monitor task progress
         while True:
             task = queue_manager.get_task_status(task_id)
-            
+
             if task:
                 status_data = {
                     "type": "status_update",
@@ -385,23 +392,29 @@ async def websocket_progress(websocket: WebSocket, prompt_id: str):
                     "task_id": task_id,
                     "status": task.status.value,
                     "retry_count": task.retry_count,
-                    "error_message": task.error
+                    "error_message": task.error,
                 }
-                
+
                 # Add timestamps
                 if task.created_at:
-                    status_data["created_at"] = datetime.fromtimestamp(task.created_at).isoformat()
+                    status_data["created_at"] = datetime.fromtimestamp(
+                        task.created_at
+                    ).isoformat()
                 if task.started_at:
-                    status_data["started_at"] = datetime.fromtimestamp(task.started_at).isoformat()
+                    status_data["started_at"] = datetime.fromtimestamp(
+                        task.started_at
+                    ).isoformat()
                 if task.completed_at:
-                    status_data["completed_at"] = datetime.fromtimestamp(task.completed_at).isoformat()
-                
+                    status_data["completed_at"] = datetime.fromtimestamp(
+                        task.completed_at
+                    ).isoformat()
+
                 # Add result if completed
                 if task.status.value == "completed" and task.result:
                     status_data["images"] = task.result.get("images", [])
-                
+
                 await websocket.send_json(status_data)
-                
+
                 # Exit if task is done
                 if task.status.value in ["completed", "failed", "cancelled"]:
                     break
@@ -409,12 +422,14 @@ async def websocket_progress(websocket: WebSocket, prompt_id: str):
                 # Task not found, try direct ComfyUI status
                 try:
                     status = await workflow_executor.get_status(prompt_id)
-                    await websocket.send_json({
-                        "type": "status_update",
-                        "prompt_id": prompt_id,
-                        "status": status.get("status", "unknown")
-                    })
-                    
+                    await websocket.send_json(
+                        {
+                            "type": "status_update",
+                            "prompt_id": prompt_id,
+                            "status": status.get("status", "unknown"),
+                        }
+                    )
+
                     if status.get("status") in ["completed", "failed"]:
                         if status.get("status") == "completed":
                             images = await workflow_executor.get_images(prompt_id)
@@ -423,9 +438,9 @@ async def websocket_progress(websocket: WebSocket, prompt_id: str):
                         break
                 except Exception as e:
                     logger.error(f"Error getting ComfyUI status: {e}")
-            
+
             await asyncio.sleep(1.0)
-        
+
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for {prompt_id}")
     except Exception as e:
@@ -438,14 +453,14 @@ async def websocket_progress(websocket: WebSocket, prompt_id: str):
 
 
 @app.get("/api/queue/status")
-async def get_queue_status():
+async def get_queue_status() -> dict[str, Any]:
     """Get queue statistics and status.
-    
+
     Returns:
         Queue statistics including size, processing, failed counts
     """
     queue_manager = app.state.queue_manager
-    
+
     stats = queue_manager.get_queue_stats()
     return {
         "status": "active",
@@ -454,115 +469,121 @@ async def get_queue_status():
             "high_priority": queue_manager.high_queue.size,
             "normal_priority": queue_manager.normal_queue.size,
             "low_priority": queue_manager.low_queue.size,
-            "total": queue_manager.get_total_queue_size()
+            "total": queue_manager.get_total_queue_size(),
         },
-        "dead_letter_queue_size": queue_manager.dead_letter_queue.size
+        "dead_letter_queue_size": queue_manager.dead_letter_queue.size,
     }
 
 
 @app.get("/api/queue/{task_id}")
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str) -> dict[str, Any]:
     """Get individual task status from queue.
-    
+
     Args:
         task_id: Task ID to check
-        
+
     Returns:
         Task status information
     """
     queue_manager = app.state.queue_manager
-    
+
     task = queue_manager.get_task_status(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     return {
         "task_id": task_id,
         "prompt_id": task.prompt_id,
         "status": task.status.value,
         "priority": task.priority.value,
-        "created_at": datetime.fromtimestamp(task.created_at).isoformat() if task.created_at else None,
-        "started_at": datetime.fromtimestamp(task.started_at).isoformat() if task.started_at else None,
-        "completed_at": datetime.fromtimestamp(task.completed_at).isoformat() if task.completed_at else None,
+        "created_at": datetime.fromtimestamp(task.created_at).isoformat()
+        if task.created_at
+        else None,
+        "started_at": datetime.fromtimestamp(task.started_at).isoformat()
+        if task.started_at
+        else None,
+        "completed_at": datetime.fromtimestamp(task.completed_at).isoformat()
+        if task.completed_at
+        else None,
         "retry_count": task.retry_count,
         "error_message": task.error,
-        "result": task.result
+        "result": task.result,
     }
 
 
 @app.get("/api/workers/status")
-async def get_workers_status():
+async def get_workers_status() -> dict[str, Any]:
     """Get worker pool status and statistics.
-    
+
     Returns:
         Worker pool status including active workers and resource usage
     """
     worker_service = app.state.worker_service
-    
-    return worker_service.get_status()
+
+    return t.cast(dict[str, Any], worker_service.get_status())
 
 
 @app.post("/api/workers/pause")
-async def pause_workers():
+async def pause_workers() -> dict[str, str]:
     """Pause all workers in the pool.
-    
+
     Returns:
         Confirmation of pause operation
     """
     worker_service = app.state.worker_service
-    
+
     worker_service.pause()
     return {"status": "paused", "message": "All workers have been paused"}
 
 
 @app.post("/api/workers/resume")
-async def resume_workers():
+async def resume_workers() -> dict[str, str]:
     """Resume all paused workers in the pool.
-    
+
     Returns:
         Confirmation of resume operation
     """
     worker_service = app.state.worker_service
-    
+
     worker_service.resume()
     return {"status": "resumed", "message": "All workers have been resumed"}
 
 
 @app.post("/api/workers/scale")
-async def scale_workers(target_workers: int):
+async def scale_workers(target_workers: int) -> dict[str, Any]:
     """Manually scale the worker pool.
-    
+
     Args:
         target_workers: Target number of workers
-        
+
     Returns:
         Scaling operation result
     """
     worker_service = app.state.worker_service
     worker_pool = worker_service.worker_pool
-    
+
     if target_workers < worker_pool.min_workers:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot scale below minimum workers ({worker_pool.min_workers})"
+            detail=f"Cannot scale below minimum workers ({worker_pool.min_workers})",
         )
-    
+
     if target_workers > worker_pool.max_workers:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot scale above maximum workers ({worker_pool.max_workers})"
+            detail=f"Cannot scale above maximum workers ({worker_pool.max_workers})",
         )
-    
+
     current_workers = len(worker_pool.workers)
-    
+
     if target_workers > current_workers:
         # Scale up
-        for i in range(target_workers - current_workers):
+        for _ in range(target_workers - current_workers):
             await worker_pool.add_worker()
         return {
             "status": "scaled_up",
             "previous_workers": current_workers,
-            "current_workers": len(worker_pool.workers)
+            "current_workers": len(worker_pool.workers),
         }
     elif target_workers < current_workers:
         # Scale down
@@ -574,65 +595,60 @@ async def scale_workers(target_workers: int):
         return {
             "status": "scaled_down",
             "previous_workers": current_workers,
-            "current_workers": len(worker_pool.workers)
+            "current_workers": len(worker_pool.workers),
         }
     else:
-        return {
-            "status": "no_change",
-            "current_workers": current_workers
-        }
+        return {"status": "no_change", "current_workers": current_workers}
 
 
 @app.get("/api/resources/status")
-async def get_resource_status():
+async def get_resource_status() -> dict[str, Any]:
     """Get current system resource usage.
-    
+
     Returns:
         Current CPU, memory, disk, and GPU usage
     """
     resource_monitor = app.state.resource_monitor
-    
+
     usage = resource_monitor.get_current_usage()
     system_info = resource_monitor.get_system_info()
-    
+
     return {
         "current_usage": usage.to_dict(),
         "system_info": system_info,
-        "resource_limits": app.state.task_executor.resource_limits
+        "resource_limits": app.state.task_executor.resource_limits,
     }
 
 
 @app.post("/api/cancel/{prompt_id}")
-async def cancel_generation(prompt_id: str):
+async def cancel_generation(prompt_id: str) -> dict[str, str]:
     """Cancel a running workflow.
-    
+
     Args:
         prompt_id: Prompt ID to cancel
-        
+
     Returns:
         Cancellation status
     """
     queue_manager = app.state.queue_manager
-    
+
     # Try to cancel task in queue
     task_id = f"task-{prompt_id}"
     task = queue_manager.get_task_status(task_id)
-    
+
     if task and task.status.value in ["queued", "processing"]:
         # Mark as failed/cancelled
         queue_manager.fail_task(task_id, "Cancelled by user", retry=False)
         return {"status": "cancelled", "prompt_id": prompt_id, "task_id": task_id}
-    
+
     raise HTTPException(status_code=404, detail="Job not found or already completed")
-
-
 
 
 if __name__ == "__main__":
     uvicorn.run(
         "workflow_api:app",
-        host="0.0.0.0",
-        port=8000,
+        host=os.getenv("HOST") or "127.0.0.1",
+        port=int(os.getenv("PORT", "8000")),
         reload=True,
-        log_level="info"
+        log_level="info",
     )

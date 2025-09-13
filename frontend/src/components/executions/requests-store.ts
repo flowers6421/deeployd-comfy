@@ -28,4 +28,3 @@ export function loadRequests(): SavedRequest[] {
 export function clearRequests() {
   try { localStorage.removeItem(KEY) } catch {}
 }
-

@@ -1,13 +1,20 @@
 """Simple event bus to broadcast build/execution events over WebSockets."""
 
-from typing import Any
-
-from src.api.websocket_manager import WebSocketManager
-
-_manager: WebSocketManager | None = None
+from typing import Any, Protocol
 
 
-def set_manager(manager: WebSocketManager) -> None:
+class _ManagerProto(Protocol):
+    async def broadcast_to_room(
+        self, room: str, message: dict[str, Any]
+    ) -> Any:  # pragma: no cover - protocol only
+        ...
+
+
+_manager: _ManagerProto | None = None
+
+
+def set_manager(manager: _ManagerProto) -> None:
+    """Attach a WebSocket manager used to broadcast events to rooms."""
     global _manager
     _manager = manager
 
@@ -15,6 +22,7 @@ def set_manager(manager: WebSocketManager) -> None:
 async def emit_build_event(
     build_id: str, message_type: str, data: dict[str, Any]
 ) -> None:
+    """Emit a build-scoped event to clients subscribed to the build room."""
     if not _manager:
         return
     await _manager.broadcast_to_room(
@@ -25,6 +33,7 @@ async def emit_build_event(
 async def emit_execution_event(
     execution_id: str, message_type: str, data: dict[str, Any]
 ) -> None:
+    """Emit an execution-scoped event to clients subscribed to the execution room."""
     if not _manager:
         return
     await _manager.broadcast_to_room(

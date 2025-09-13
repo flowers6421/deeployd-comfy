@@ -1,24 +1,24 @@
 """Database connection and session management using SQLModel with SQLite."""
 
 import logging
-from pathlib import Path
-from typing import Generator, Optional
+from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Protocol
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session
+from sqlmodel import Session, SQLModel
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
     """Manages database connections and sessions."""
-    
-    def __init__(self, db_url: Optional[str] = None):
+
+    def __init__(self, db_url: str | None = None):
         """Initialize database connection.
-        
+
         Args:
             db_url: Database URL. Defaults to SQLite in project root.
         """
@@ -27,11 +27,11 @@ class Database:
             db_path = Path.cwd() / "comfyui_workflows.db"
             db_url = f"sqlite:///{db_path}"
             logger.info(f"Using SQLite database at {db_path}")
-        
+
         self.db_url = db_url
         self.engine = self._create_engine()
-        
-    def _create_engine(self) -> Engine:
+
+    def _create_engine(self) -> Any:
         """Create SQLAlchemy engine with appropriate settings."""
         if self.db_url.startswith("sqlite"):
             # SQLite specific settings
@@ -40,16 +40,16 @@ class Database:
                 self.db_url,
                 connect_args=connect_args,
                 poolclass=StaticPool,  # Better for SQLite
-                echo=False  # Set to True for SQL debugging
+                echo=False,  # Set to True for SQL debugging
             )
-            
+
             # Enable foreign key constraints for SQLite
             @event.listens_for(engine, "connect")
-            def set_sqlite_pragma(dbapi_conn, connection_record):
+            def set_sqlite_pragma(dbapi_conn: Any, _connection_record: Any) -> None:
                 cursor = dbapi_conn.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.close()
-                
+
         else:
             # PostgreSQL or other databases
             engine = create_engine(
@@ -57,28 +57,37 @@ class Database:
                 echo=False,
                 pool_pre_ping=True,  # Verify connections before using
                 pool_size=5,
-                max_overflow=10
+                max_overflow=10,
             )
-        
+
         return engine
-    
-    def create_tables(self):
+
+    def create_tables(self) -> None:
         """Create all tables in the database."""
         SQLModel.metadata.create_all(self.engine)
         logger.info("Database tables created")
-    
-    def drop_tables(self):
-        """Drop all tables in the database. Use with caution!"""
+
+    def drop_tables(self) -> None:
+        """Drop all tables in the database. Use with caution."""
         SQLModel.metadata.drop_all(self.engine)
         logger.info("Database tables dropped")
-    
+
+    class SessionLike(Protocol):
+        """Minimal database session protocol used by repositories."""
+
+        def rollback(self) -> None:
+            """Roll back the current transaction."""
+
+        def close(self) -> None:
+            """Close the session and release resources."""
+
     @contextmanager
-    def get_session(self) -> Generator[Session, None, None]:
+    def get_session(self) -> Generator[SessionLike, None, None]:
         """Get a database session with automatic cleanup.
-        
+
         Yields:
             SQLModel Session
-            
+
         Example:
             with db.get_session() as session:
                 session.add(workflow)
@@ -92,13 +101,13 @@ class Database:
             raise
         finally:
             session.close()
-    
-    def get_session_dependency(self) -> Generator[Session, None, None]:
-        """FastAPI dependency for database sessions.
-        
+
+    def get_session_dependency(self) -> Generator[SessionLike, None, None]:
+        """Fastapi dependency for database sessions.
+
         Yields:
             SQLModel Session
-            
+
         Example:
             @app.get("/workflows")
             def get_workflows(session: Session = Depends(db.get_session_dependency)):
@@ -109,15 +118,15 @@ class Database:
 
 
 # Global database instance
-_db: Optional[Database] = None
+_db: Database | None = None
 
 
-def get_database(db_url: Optional[str] = None) -> Database:
+def get_database(db_url: str | None = None) -> Database:
     """Get or create the global database instance.
-    
+
     Args:
         db_url: Optional database URL to override default
-        
+
     Returns:
         Database instance
     """
@@ -127,9 +136,9 @@ def get_database(db_url: Optional[str] = None) -> Database:
     return _db
 
 
-def init_db(db_url: Optional[str] = None, create_tables: bool = True):
+def init_db(db_url: str | None = None, create_tables: bool = True) -> "Database":
     """Initialize the database.
-    
+
     Args:
         db_url: Optional database URL
         create_tables: Whether to create tables immediately

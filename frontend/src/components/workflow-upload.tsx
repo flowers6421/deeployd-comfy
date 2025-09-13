@@ -43,7 +43,7 @@ export function WorkflowUpload({ open, onClose, onSuccess }: WorkflowUploadProps
     if (!uploadedFile) return;
 
     setFile(uploadedFile);
-    
+
     // Extract name from filename
     const fileName = uploadedFile.name.replace(/\.(json|workflow)$/i, '');
     setName(fileName);
@@ -55,7 +55,7 @@ export function WorkflowUpload({ open, onClose, onSuccess }: WorkflowUploadProps
     try {
       const result = await apiClient.workflows.validate(formData);
       setValidationResult(result);
-      
+
       if (!result.valid) {
         toast.error('Workflow validation failed');
       }

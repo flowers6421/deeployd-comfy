@@ -13,6 +13,7 @@
 - **Type**: JavaScript-based custom nodes
 
 ### Node Details
+
 ```json
 {
   "GetNode": {
@@ -54,6 +55,7 @@ These nodes solve the "spaghetti workflow" problem in ComfyUI by:
 - **Jump Navigation**: Right-click to jump between corresponding Set/Get node pairs
 
 ### Workflow Example
+
 ```
 Traditional Connection:
 [CheckpointLoader] → → → → → [KSampler]
@@ -83,6 +85,7 @@ With Set/Get Nodes:
 ## Installation and Dependencies
 
 ### Installation Steps
+
 ```bash
 # Standard Installation
 cd ComfyUI/custom_nodes
@@ -120,6 +123,7 @@ pip install -r ComfyUI-KJNodes/requirements.txt
 - **Classification**: Correctly identified as custom nodes, not built-in
 
 ### Resolution Strategy
+
 ```python
 # Recommended addition to known node mappings
 KNOWN_KJNODES = {
@@ -140,6 +144,7 @@ KNOWN_KJNODES = {
 3. **Context Nodes** (rgthree): Pipeline-based data passing system
 
 ### Comparison Matrix
+
 | Feature | SetNode/GetNode | AnythingEverywhere | rgthree Context |
 |---------|-----------------|-------------------|-----------------|
 | Visual Clarity | ★★★★★ | ★★★★☆ | ★★★☆☆ |
@@ -167,6 +172,7 @@ KNOWN_KJNODES = {
 ## Technical Specifications
 
 ### File Structure
+
 ```
 ComfyUI-KJNodes/
 ├── js/

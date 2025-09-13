@@ -1,7 +1,7 @@
 """Converter for ComfyUI workflow formats (UI to API and vice versa)."""
 
 import logging
-from typing import Any
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ class WorkflowConverter:
         Returns:
             Workflow in API format
         """
-        api_workflow = {}
+        api_workflow: dict[str, Any] = {}
 
         # Handle empty workflow
         if "nodes" not in ui_workflow or not ui_workflow["nodes"]:
@@ -207,7 +207,11 @@ class WorkflowConverter:
                             source_node, source_slot = link_map[link_id]
                             # Flatten chains of Reroute nodes if present
                             visited: set[int] = set()
-                            while isinstance(source_node, int) and source_node in reroute_upstream and source_node not in visited:
+                            while (
+                                isinstance(source_node, int)
+                                and source_node in reroute_upstream
+                                and source_node not in visited
+                            ):
                                 visited.add(source_node)
                                 upstream = reroute_upstream.get(source_node)
                                 if upstream is None:
@@ -217,11 +221,16 @@ class WorkflowConverter:
                             # If source is a TextInput_ node, inline its literal value
                             if isinstance(source_node, int):
                                 src_node_obj = node_map.get(source_node)
-                                if src_node_obj is not None and str(src_node_obj.get("type")) == "TextInput_":
+                                if (
+                                    src_node_obj is not None
+                                    and str(src_node_obj.get("type")) == "TextInput_"
+                                    and source_node in textinput_values
+                                ):
                                     # Inline literal (fallback to widget value lookup)
-                                    if source_node in textinput_values:
-                                        api_node["inputs"][input_name] = textinput_values[source_node]
-                                        continue
+                                    api_node["inputs"][input_name] = textinput_values[
+                                        source_node
+                                    ]
+                                    continue
 
                             # Default: keep as a connection
                             api_node["inputs"][input_name] = [
@@ -325,9 +334,33 @@ class WorkflowConverter:
         Returns:
             Workflow in UI format
         """
-        # This is a more complex operation that requires layout information
-        # For now, we'll implement a basic version
-        ui_workflow = {
+        # This is a more complex operation that requires layout information.
+        # Provide precise typing so mypy knows the shapes of values in the UI workflow.
+
+        class UINode(TypedDict):
+            id: int | str
+            type: str
+            pos: list[int]
+            size: list[int]
+            flags: dict[str, Any]
+            order: int
+            mode: int
+            inputs: list[Any]
+            outputs: list[Any]
+            properties: dict[str, Any]
+            widgets_values: list[Any]
+
+        class UIWorkflow(TypedDict):
+            last_node_id: int
+            last_link_id: int
+            nodes: list[UINode]
+            links: list[list[Any]]
+            groups: list[Any]
+            config: dict[str, Any]
+            extra: dict[str, Any]
+            version: float
+
+        ui_workflow: UIWorkflow = {
             "last_node_id": 0,
             "last_link_id": 0,
             "nodes": [],
@@ -356,7 +389,7 @@ class WorkflowConverter:
                 current_x = 0
                 current_y += 200
 
-            ui_node = {
+            ui_node: UINode = {
                 "id": int(node_id) if node_id.isdigit() else node_id,
                 "type": node_data.get("class_type", "Unknown"),
                 "pos": [pos_x, pos_y],
@@ -421,4 +454,5 @@ class WorkflowConverter:
 
         ui_workflow["last_link_id"] = link_id_counter - 1
 
-        return ui_workflow
+        # Return as a plain dict[str, Any] to satisfy callers and mypy
+        return dict(ui_workflow)

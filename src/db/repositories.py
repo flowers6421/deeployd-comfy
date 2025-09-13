@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import typing as t
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
-from sqlmodel import Session, func, select
+from sqlmodel import func, select
 
 from src.db.models import (
     APIEndpoint,
@@ -22,13 +23,119 @@ from src.db.models import (
     WorkflowVersion,
 )
 
+# Type alias to avoid conflict with list method
+ParamsList = list[dict[str, t.Any]]
+
+if TYPE_CHECKING:
+    # Typing-only imports; available to mypy but ignored at runtime
+    pass
+
+
+class SessionLike(Protocol):
+    """Protocol for database session interface."""
+
+    def add(self, obj: t.Any) -> None:
+        """Add object to session."""
+        ...
+
+    def commit(self) -> None:
+        """Commit transaction."""
+        ...
+
+    def refresh(self, obj: t.Any) -> None:
+        """Refresh object from database."""
+        ...
+
+    def exec(self, stmt: t.Any) -> t.Any:
+        """Execute statement."""
+        ...
+
+    def delete(self, obj: t.Any) -> None:
+        """Delete object from session."""
+        ...
+
+    def rollback(self) -> None:
+        """Rollback transaction."""
+        ...
+
+
+@runtime_checkable
+class WorkflowLike(Protocol):
+    """Protocol for Workflow model."""
+
+    id: str
+    name: str
+    version: int
+    definition: dict[str, t.Any]
+    dependencies: dict[str, t.Any] | None
+    parameters: ParamsList
+    description: str | None
+    updated_at: datetime | None
+    created_at: datetime | None
+
+
+@runtime_checkable
+class ContainerBuildLike(Protocol):
+    """Protocol for ContainerBuild model."""
+
+    id: str
+    workflow_id: str
+    image_name: str
+    tag: str
+    dockerfile: str | None
+    build_status: str
+    build_logs: str | None
+    image_size: int | None
+    created_at: datetime | None
+    completed_at: datetime | None
+    build_duration: float | None
+
+
+@runtime_checkable
+class BuildLogLike(Protocol):
+    """Protocol for BuildLog model."""
+
+    build_id: str
+    seq: int
+    line: str
+    created_at: datetime | None
+
+
+@runtime_checkable
+class CustomNodeLike(Protocol):
+    """Protocol for CustomNode model."""
+
+    repository_url: str
+    commit_hash: str
+    node_types: list[str]
+    python_dependencies: list[str]
+    verified: bool
+    updated_at: datetime | None
+
+
+@runtime_checkable
+class WorkflowExecutionLike(Protocol):
+    """Protocol for WorkflowExecution model."""
+
+    id: str
+    workflow_id: str
+    prompt_id: str
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    input_parameters: dict[str, t.Any]
+    error_message: str | None
+    output_files: list[str] | None
+    execution_time: float | None
+
+
 logger = logging.getLogger(__name__)
 
 
 class WorkflowRepository:
     """Repository for workflow CRUD operations."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: SessionLike):
         """Initialize with database session.
 
         Args:
@@ -39,11 +146,11 @@ class WorkflowRepository:
     def create(
         self,
         name: str,
-        definition: dict[str, Any],
-        dependencies: dict[str, Any] | None = None,
-        parameters: list[dict[str, Any]] | None = None,
+        definition: dict[str, t.Any],
+        dependencies: dict[str, t.Any] | None = None,
+        parameters: ParamsList | None = None,
         description: str | None = None,
-    ) -> Workflow:
+    ) -> WorkflowLike:
         """Create a new workflow.
 
         Args:
@@ -56,12 +163,15 @@ class WorkflowRepository:
         Returns:
             Created workflow
         """
-        workflow = Workflow(
-            name=name,
-            definition=definition,
-            dependencies=dependencies or {},
-            parameters=parameters or [],
-            description=description,
+        workflow = t.cast(
+            WorkflowLike,
+            Workflow(
+                name=name,
+                definition=definition,
+                dependencies=dependencies or {},
+                parameters=parameters or [],
+                description=description,
+            ),
         )
 
         self.session.add(workflow)
@@ -74,7 +184,7 @@ class WorkflowRepository:
         logger.info(f"Created workflow {workflow.id}: {name}")
         return workflow
 
-    def get(self, workflow_id: str) -> Workflow | None:
+    def get(self, workflow_id: str) -> WorkflowLike | None:
         """Get workflow by ID.
 
         Args:
@@ -84,9 +194,9 @@ class WorkflowRepository:
             Workflow or None if not found
         """
         statement = select(Workflow).where(Workflow.id == workflow_id)
-        return self.session.exec(statement).first()
+        return t.cast(WorkflowLike | None, self.session.exec(statement).first())
 
-    def get_by_name(self, name: str) -> Workflow | None:
+    def get_by_name(self, name: str) -> WorkflowLike | None:
         """Get workflow by name.
 
         Args:
@@ -100,11 +210,11 @@ class WorkflowRepository:
             .where(Workflow.name == name)
             .order_by(Workflow.version.desc())
         )
-        return self.session.exec(statement).first()
+        return t.cast(WorkflowLike | None, self.session.exec(statement).first())
 
     def list(
         self, limit: int = 10, offset: int = 0, name_filter: str | None = None
-    ) -> list[Workflow]:
+    ) -> list[WorkflowLike]:
         """List workflows with pagination.
 
         Args:
@@ -121,17 +231,17 @@ class WorkflowRepository:
             statement = statement.where(Workflow.name.contains(name_filter))
 
         statement = statement.offset(offset).limit(limit)
-        return list(self.session.exec(statement))
+        return t.cast(list[WorkflowLike], list(self.session.exec(statement)))
 
     def update(
         self,
         workflow_id: str,
-        definition: dict[str, Any] | None = None,
-        dependencies: dict[str, Any] | None = None,
-        parameters: list[dict[str, Any]] | None = None,
+        definition: dict[str, t.Any] | None = None,
+        dependencies: dict[str, t.Any] | None = None,
+        parameters: ParamsList | None = None,
         description: str | None = None,
         version_message: str = "Updated workflow",
-    ) -> Workflow | None:
+    ) -> WorkflowLike | None:
         """Update an existing workflow.
 
         Args:
@@ -197,7 +307,7 @@ class WorkflowRepository:
         logger.info(f"Deleted workflow {workflow_id}")
         return True
 
-    def _create_version(self, workflow: Workflow, message: str):
+    def _create_version(self, workflow: WorkflowLike, message: str) -> None:
         """Create a workflow version record.
 
         Args:
@@ -213,7 +323,7 @@ class WorkflowRepository:
             },
             sort_keys=True,
         )
-        commit_hash = hashlib.sha1(content.encode()).hexdigest()
+        commit_hash = hashlib.sha1(content.encode(), usedforsecurity=False).hexdigest()
 
         # Get parent hash if exists
         parent_statement = (
@@ -239,7 +349,7 @@ class WorkflowRepository:
 class BuildRepository:
     """Repository for container build operations."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: SessionLike):
         """Initialize with database session.
 
         Args:
@@ -247,13 +357,29 @@ class BuildRepository:
         """
         self.session = session
 
+    @runtime_checkable
+    class ContainerBuildLike(Protocol):
+        """Protocol for ContainerBuild model within BuildRepository."""
+
+        id: str
+        workflow_id: str
+        image_name: str
+        tag: str
+        dockerfile: str | None
+        build_status: str
+        build_logs: str | None
+        image_size: int | None
+        created_at: datetime | None
+        completed_at: datetime | None
+        build_duration: float | None
+
     def create_build(
         self,
         workflow_id: str,
         image_name: str,
         tag: str = "latest",
         dockerfile: str | None = None,
-    ) -> ContainerBuild:
+    ) -> ContainerBuildLike:
         """Create a new build record.
 
         Args:
@@ -265,12 +391,15 @@ class BuildRepository:
         Returns:
             Created build record
         """
-        build = ContainerBuild(
-            workflow_id=workflow_id,
-            image_name=image_name,
-            tag=tag,
-            dockerfile=dockerfile,
-            build_status="pending",
+        build = t.cast(
+            ContainerBuildLike,
+            ContainerBuild(
+                workflow_id=workflow_id,
+                image_name=image_name,
+                tag=tag,
+                dockerfile=dockerfile,
+                build_status="pending",
+            ),
         )
 
         self.session.add(build)
@@ -287,7 +416,7 @@ class BuildRepository:
         logs: str | None = None,
         image_size: int | None = None,
         error: str | None = None,
-    ) -> ContainerBuild | None:
+    ) -> ContainerBuildLike | None:
         """Update build status and metadata.
 
         Args:
@@ -302,7 +431,7 @@ class BuildRepository:
         """
         self._ensure_container_builds_schema()
         statement = select(ContainerBuild).where(ContainerBuild.id == build_id)
-        build = self.session.exec(statement).first()
+        build = t.cast(ContainerBuildLike | None, self.session.exec(statement).first())
 
         if not build:
             return None
@@ -310,11 +439,11 @@ class BuildRepository:
         build.build_status = status
 
         if logs is not None and logs.strip():
-            try:
+            from contextlib import suppress
+
+            with suppress(Exception):
                 # Also store as streaming row
                 self.append_build_log(build_id, logs)
-            except Exception:
-                pass
         if image_size:
             build.image_size = image_size
         if error:
@@ -332,6 +461,8 @@ class BuildRepository:
 
         logger.info(f"Updated build {build_id} status to {status}")
         return build
+
+    # Use module-level BuildLogLike protocol for log rows
 
     def append_build_log(self, build_id: str, line: str) -> int | None:
         """Append a log line as BuildLog and keep legacy field for short preview."""
@@ -364,12 +495,13 @@ class BuildRepository:
 
     def get_build_logs(
         self, build_id: str, since: int | None = None, limit: int = 200
-    ) -> list[BuildLog]:
+    ) -> list[BuildLogLike]:
+        """Return build logs for a build id, optionally after a sequence number."""
         stmt = select(BuildLog).where(BuildLog.build_id == build_id)
         if since is not None:
             stmt = stmt.where(BuildLog.seq > since)
         stmt = stmt.order_by(BuildLog.seq.asc()).limit(limit)
-        return list(self.session.exec(stmt))
+        return t.cast(list[BuildLogLike], list(self.session.exec(stmt)))
 
     def cleanup_incomplete(self) -> int:
         """Mark all non-terminal builds as failed and return affected count."""
@@ -392,7 +524,7 @@ class BuildRepository:
 
     def get_build_history(
         self, workflow_id: str | None = None, limit: int = 10
-    ) -> list[ContainerBuild]:
+    ) -> list[ContainerBuildLike]:
         """Get build history.
 
         Args:
@@ -409,14 +541,16 @@ class BuildRepository:
             statement = statement.where(ContainerBuild.workflow_id == workflow_id)
 
         statement = statement.limit(limit)
-        return list(self.session.exec(statement))
+        return t.cast(list[ContainerBuildLike], list(self.session.exec(statement)))
 
-    def get_by_id(self, build_id: str) -> ContainerBuild | None:
+    def get_by_id(self, build_id: str) -> ContainerBuildLike | None:
+        """Fetch a single build by id or return None."""
         self._ensure_container_builds_schema()
         stmt = select(ContainerBuild).where(ContainerBuild.id == build_id)
-        return self.session.exec(stmt).first()
+        return t.cast(ContainerBuildLike | None, self.session.exec(stmt).first())
 
-    def set_resolved_nodes(self, build_id: str, nodes: list[dict[str, Any]]):
+    def set_resolved_nodes(self, build_id: str, nodes: list[dict[str, t.Any]]) -> None:
+        """Persist the resolved custom node list for a given build id."""
         self._ensure_container_builds_schema()
         stmt = select(ContainerBuild).where(ContainerBuild.id == build_id)
         build = self.session.exec(stmt).first()
@@ -449,7 +583,9 @@ class BuildRepository:
             # Be defensive; don't block normal operations
             self.session.rollback()
 
-    def get_latest_successful_build(self, workflow_id: str) -> ContainerBuild | None:
+    def get_latest_successful_build(
+        self, workflow_id: str
+    ) -> ContainerBuildLike | None:
         """Get the most recent successful build for a workflow.
 
         Args:
@@ -466,13 +602,13 @@ class BuildRepository:
             )
             .order_by(ContainerBuild.completed_at.desc())
         )
-        return self.session.exec(statement).first()
+        return t.cast(ContainerBuildLike | None, self.session.exec(statement).first())
 
 
 class CustomNodeRepository:
     """Repository for custom node registry."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: SessionLike):
         """Initialize with database session.
 
         Args:
@@ -486,7 +622,7 @@ class CustomNodeRepository:
         commit_hash: str,
         node_types: list[str],
         python_dependencies: list[str] | None = None,
-    ) -> CustomNode:
+    ) -> CustomNodeLike:
         """Register a custom node.
 
         Args:
@@ -503,7 +639,7 @@ class CustomNodeRepository:
             CustomNode.repository_url == repository_url,
             CustomNode.commit_hash == commit_hash,
         )
-        existing = self.session.exec(statement).first()
+        existing = t.cast(CustomNodeLike | None, self.session.exec(statement).first())
 
         if existing:
             # Update node types if needed
@@ -513,11 +649,14 @@ class CustomNodeRepository:
             self.session.commit()
             return existing
 
-        node = CustomNode(
-            repository_url=repository_url,
-            commit_hash=commit_hash,
-            node_types=node_types,
-            python_dependencies=python_dependencies or [],
+        node = t.cast(
+            CustomNodeLike,
+            CustomNode(
+                repository_url=repository_url,
+                commit_hash=commit_hash,
+                node_types=node_types,
+                python_dependencies=python_dependencies or [],
+            ),
         )
 
         self.session.add(node)
@@ -527,7 +666,7 @@ class CustomNodeRepository:
         logger.info(f"Registered custom node from {repository_url}")
         return node
 
-    def find_by_node_type(self, node_type: str) -> CustomNode | None:
+    def find_by_node_type(self, node_type: str) -> CustomNodeLike | None:
         """Find custom node by node type.
 
         Args:
@@ -538,7 +677,7 @@ class CustomNodeRepository:
         """
         # This requires JSON contains query
         statement = select(CustomNode)
-        nodes = self.session.exec(statement).all()
+        nodes = t.cast(list[CustomNodeLike], self.session.exec(statement).all())
 
         for node in nodes:
             if node_type in node.node_types:
@@ -548,7 +687,7 @@ class CustomNodeRepository:
 
     def list_nodes(
         self, verified_only: bool = False, limit: int = 50
-    ) -> list[CustomNode]:
+    ) -> list[CustomNodeLike]:
         """List registered custom nodes.
 
         Args:
@@ -561,42 +700,49 @@ class CustomNodeRepository:
         statement = select(CustomNode).order_by(CustomNode.updated_at.desc())
 
         if verified_only:
-            statement = statement.where(CustomNode.verified == True)
+            statement = statement.where(CustomNode.verified)
 
         statement = statement.limit(limit)
-        return list(self.session.exec(statement))
+        return t.cast(list[CustomNodeLike], list(self.session.exec(statement)))
 
 
 class ExecutionRepository:
     """Repository for workflow executions."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: SessionLike):
+        """Initialize the repository with a database session."""
         self.session = session
 
-    def list(self, limit: int = 50) -> list[WorkflowExecution]:
+    def list(self, limit: int = 50) -> list[WorkflowExecutionLike]:
+        """List recent executions up to the provided limit."""
         stmt = (
             select(WorkflowExecution)
             .order_by(WorkflowExecution.started_at.desc())
             .limit(limit)
         )
-        return list(self.session.exec(stmt))
+        return t.cast(list[WorkflowExecutionLike], list(self.session.exec(stmt)))
 
-    def get(self, execution_id: str) -> WorkflowExecution | None:
+    def get(self, execution_id: str) -> WorkflowExecutionLike | None:
+        """Fetch a single execution by id or None if missing."""
         stmt = select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
-        return self.session.exec(stmt).first()
+        return t.cast(WorkflowExecutionLike | None, self.session.exec(stmt).first())
 
     def create(
         self,
         workflow_id: str,
         prompt_id: str,
         status: str = "pending",
-        input_parameters: dict[str, Any] | None = None,
-    ) -> WorkflowExecution:
-        execution = WorkflowExecution(
-            workflow_id=workflow_id,
-            prompt_id=prompt_id,
-            status=status,
-            input_parameters=input_parameters or {},
+        input_parameters: dict[str, t.Any] | None = None,
+    ) -> WorkflowExecutionLike:
+        """Create and persist a new execution record."""
+        execution = t.cast(
+            WorkflowExecutionLike,
+            WorkflowExecution(
+                workflow_id=workflow_id,
+                prompt_id=prompt_id,
+                status=status,
+                input_parameters=input_parameters or {},
+            ),
         )
         self.session.add(execution)
         self.session.commit()

@@ -93,7 +93,7 @@ export function PresetsManager({ onRun }: { onRun: (opts: { workflow_id: string;
         const data = JSON.parse(String(reader.result || '[]')) as Preset[]
         const cleaned = data.map(p => ({ ...p, id: p.id || crypto.randomUUID(), created_at: p.created_at || new Date().toISOString() }))
         setPresets(prev => [...prev, ...cleaned])
-        toast.success(`Imported ${cleaned.length} preset(s)`) 
+        toast.success(`Imported ${cleaned.length} preset(s)`)
       } catch { toast.error('Invalid presets file') }
     }
     reader.readAsText(file)

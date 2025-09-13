@@ -1,18 +1,19 @@
 """Workflow API router with database integration."""
 
 import json
+import typing as t
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session
 
 from src.api.exceptions import InvalidWorkflowError, WorkflowNotFoundError
 from src.api.generator import WorkflowAPIGenerator
-from src.workflows.node_resolver import ComfyUIJsonResolver
 from src.db.database import init_db
 from src.db.repositories import WorkflowRepository
 from src.workflows.dependencies import DependencyExtractor
+from src.workflows.node_resolver import ComfyUIJsonResolver
 from src.workflows.parser import WorkflowParser
 from src.workflows.validator import WorkflowValidator
 
@@ -22,13 +23,13 @@ router = APIRouter()
 db = init_db()
 
 
-def get_session():
+def get_session() -> t.Generator[Any, None, None]:
     """Get database session."""
     with db.get_session() as session:
         yield session
 
 
-class WorkflowResponse(BaseModel):
+class WorkflowResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Workflow response model."""
 
     id: str
@@ -44,11 +45,11 @@ class WorkflowResponse(BaseModel):
 
 @router.post("/", response_model=WorkflowResponse)
 async def create_workflow(
-    file: UploadFile = File(...),
+    file: Any = File(...),
     name: str | None = None,
     description: str | None = None,
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> WorkflowResponse:
     """Create a new workflow from uploaded file.
 
     Args:
@@ -67,7 +68,7 @@ async def create_workflow(
     try:
         workflow_data = json.loads(content)
     except json.JSONDecodeError as e:
-        raise InvalidWorkflowError(f"Invalid JSON: {e}")
+        raise InvalidWorkflowError(f"Invalid JSON: {e}") from e
 
     # Extract name from filename if not provided
     if not name:
@@ -76,9 +77,9 @@ async def create_workflow(
     # Parse and validate workflow
     parser = WorkflowParser()
     try:
-        parsed = parser.parse(workflow_data)
+        parser.parse(workflow_data)
     except Exception as e:
-        raise InvalidWorkflowError(f"Invalid workflow: {e}")
+        raise InvalidWorkflowError(f"Invalid workflow: {e}") from e
 
     # Extract dependencies
     extractor = DependencyExtractor()
@@ -125,13 +126,13 @@ async def create_workflow(
         dependencies=workflow.dependencies,
         parameters=workflow.parameters,
         version=workflow.version,
-        created_at=workflow.created_at.isoformat(),
-        updated_at=workflow.updated_at.isoformat(),
+        created_at=workflow.created_at.isoformat() if workflow.created_at else "",
+        updated_at=workflow.updated_at.isoformat() if workflow.updated_at else "",
     )
 
 
 @router.post("/validate")
-async def validate_workflow(file: UploadFile = File(...)):
+async def validate_workflow(file: Any = File(...)) -> dict[str, t.Any]:
     """Validate an uploaded workflow without saving it.
 
     Returns validation status, errors, warnings, dependencies and parameters.
@@ -195,7 +196,9 @@ async def validate_workflow(file: UploadFile = File(...)):
     }
 
 
-class ResolveNodesRequest(BaseModel):
+class ResolveNodesRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Optional overrides for node class -> repo URL when resolving."""
+
     manual_repos: dict[str, str] | None = None
 
 
@@ -203,8 +206,8 @@ class ResolveNodesRequest(BaseModel):
 async def resolve_nodes(
     workflow_id: str,
     body: ResolveNodesRequest | None = None,
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> list[dict[str, t.Any]]:
     """Resolve custom nodes for a workflow using the same strategy as CLI."""
     repo = WorkflowRepository(session)
     wf = repo.get(workflow_id)
@@ -213,20 +216,25 @@ async def resolve_nodes(
     # Resolve via comfyui-json (authoritative), including injected extensions
     resolver = ComfyUIJsonResolver()
     # Write workflow to a temp file for the Node bridge
-    import tempfile, json as _json
+    import json as _json
+    import tempfile
+
     try:
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(
+            mode="w+", suffix=".json", delete=False
+        ) as tmp:
             _json.dump(wf.definition or {}, tmp)
             tmp.flush()
             data = resolver.get_comprehensive_resolution(Path(tmp.name))
     except Exception as err:
         # Strict behavior: comfyui-json is required; surface precise error to the client
-        from fastapi import HTTPException
-        raise HTTPException(status_code=502, detail=f"comfyui-json resolution failed: {err}")
+        raise HTTPException(
+            status_code=502, detail=f"comfyui-json resolution failed: {err}"
+        ) from err
 
     # Apply manual overrides (merge/override url entries by url)
     nodes = data.get("custom_nodes", {})
-    manual = (body.manual_repos if body and body.manual_repos else {})
+    manual = body.manual_repos if body and body.manual_repos else {}
     # Manual repos keyed by class name -> turn into url entries
     for _class, url in manual.items():
         nodes[url] = {
@@ -242,12 +250,14 @@ async def resolve_nodes(
     # Return compact list for UI
     out = []
     for url, info in nodes.items():
-        out.append({
-            "name": info.get("name") or url.rsplit("/", 1)[-1],
-            "repository": url,
-            "commit": info.get("hash"),
-            "pip": info.get("pip", []),
-        })
+        out.append(
+            {
+                "name": info.get("name") or url.rsplit("/", 1)[-1],
+                "repository": url,
+                "commit": info.get("hash"),
+                "pip": info.get("pip", []),
+            }
+        )
     return out
 
 
@@ -256,8 +266,8 @@ async def list_workflows(
     limit: int = 100,
     offset: int = 0,
     name_filter: str | None = None,
-    session: Session = Depends(get_session),
-):
+    session: Any = Depends(get_session),
+) -> list[WorkflowResponse]:
     """List all workflows.
 
     Args:
@@ -280,15 +290,17 @@ async def list_workflows(
             dependencies=w.dependencies,
             parameters=w.parameters,
             version=w.version,
-            created_at=w.created_at.isoformat(),
-            updated_at=w.updated_at.isoformat(),
+            created_at=w.created_at.isoformat() if w.created_at else "",
+            updated_at=w.updated_at.isoformat() if w.updated_at else "",
         )
         for w in workflows
     ]
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)
-async def get_workflow(workflow_id: str, session: Session = Depends(get_session)):
+async def get_workflow(
+    workflow_id: str, session: Any = Depends(get_session)
+) -> WorkflowResponse:
     """Get workflow by ID.
 
     Args:
@@ -311,13 +323,15 @@ async def get_workflow(workflow_id: str, session: Session = Depends(get_session)
         dependencies=workflow.dependencies,
         parameters=workflow.parameters,
         version=workflow.version,
-        created_at=workflow.created_at.isoformat(),
-        updated_at=workflow.updated_at.isoformat(),
+        created_at=workflow.created_at.isoformat() if workflow.created_at else "",
+        updated_at=workflow.updated_at.isoformat() if workflow.updated_at else "",
     )
 
 
 @router.delete("/{workflow_id}")
-async def delete_workflow(workflow_id: str, session: Session = Depends(get_session)):
+async def delete_workflow(
+    workflow_id: str, session: Any = Depends(get_session)
+) -> dict[str, str]:
     """Delete workflow by ID.
 
     Args:

@@ -59,6 +59,7 @@ npm install -D @types/node
 ### 1.3 Configure TypeScript
 
 **frontend/tsconfig.json:**
+
 ```json
 {
   "compilerOptions": {
@@ -114,6 +115,7 @@ npx shadcn@latest add toast skeleton alert
 ### 1.5 Configure Environment Variables
 
 **frontend/.env.local:**
+
 ```env
 # Backend API
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -127,6 +129,7 @@ NEXT_PUBLIC_APP_VERSION=1.0.0
 ### 1.6 Update Global Styles
 
 **frontend/src/app/globals.css:**
+
 ```css
 @tailwind base;
 @tailwind components;
@@ -207,6 +210,7 @@ NEXT_PUBLIC_APP_VERSION=1.0.0
 ### 2.1 Create API Client
 
 **frontend/src/lib/api-client.ts:**
+
 ```typescript
 import { Workflow, Build, APIConfig } from '@/types';
 
@@ -227,11 +231,11 @@ class APIClient {
     };
 
     const response = await fetch(url, config);
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.statusText}`);
     }
-    
+
     return response.json();
   }
 
@@ -249,11 +253,11 @@ class APIClient {
       method: 'POST',
       body: formData,
     });
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.statusText}`);
     }
-    
+
     return response.json();
   }
 
@@ -291,6 +295,7 @@ export const apiClient = new APIClient();
 ### 2.2 Define TypeScript Types
 
 **frontend/src/types/index.ts:**
+
 ```typescript
 export interface Workflow {
   id: string;
@@ -350,6 +355,7 @@ export interface WebSocketMessage {
 ### 2.3 Create React Query Provider
 
 **frontend/src/providers/query-provider.tsx:**
+
 ```typescript
 'use client';
 
@@ -382,6 +388,7 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
 ### 2.4 Create WebSocket Hook
 
 **frontend/src/hooks/use-websocket.ts:**
+
 ```typescript
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { WebSocketMessage } from '@/types';
@@ -474,6 +481,7 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
 ### 3.1 Create Dashboard Layout
 
 **frontend/src/app/layout.tsx:**
+
 ```typescript
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
@@ -509,6 +517,7 @@ export default function RootLayout({
 ### 3.2 Create Dashboard Page
 
 **frontend/src/app/dashboard/layout.tsx:**
+
 ```typescript
 import { Sidebar } from '@/components/sidebar';
 
@@ -527,6 +536,7 @@ export default function DashboardLayout({
 ```
 
 **frontend/src/components/sidebar.tsx:**
+
 ```typescript
 'use client';
 
@@ -586,6 +596,7 @@ export function Sidebar() {
 ### 3.3 Create Workflow List Page
 
 **frontend/src/app/dashboard/workflows/page.tsx:**
+
 ```typescript
 'use client';
 
@@ -677,6 +688,7 @@ export default function WorkflowsPage() {
 ### 3.4 Create Workflow Table Component
 
 **frontend/src/components/workflow-table.tsx:**
+
 ```typescript
 'use client';
 
@@ -796,6 +808,7 @@ export function WorkflowTable({ workflows }: WorkflowTableProps) {
 ### 4.1 Create Upload Dialog
 
 **frontend/src/components/upload-dialog.tsx:**
+
 ```typescript
 'use client';
 
@@ -880,7 +893,7 @@ export function UploadDialog({ open, onOpenChange }: UploadDialogProps) {
             Upload a ComfyUI workflow JSON file to process and containerize.
           </DialogDescription>
         </DialogHeader>
-        
+
         {files.length === 0 ? (
           <div
             {...getRootProps()}
@@ -915,12 +928,12 @@ export function UploadDialog({ open, onOpenChange }: UploadDialogProps) {
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            
+
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button 
+              <Button
                 onClick={handleUpload}
                 disabled={uploadMutation.isPending}
               >
@@ -948,6 +961,7 @@ npm install react-dropzone
 ### 5.1 Create Build Monitor Page
 
 **frontend/src/app/dashboard/builds/page.tsx:**
+
 ```typescript
 'use client';
 
@@ -992,7 +1006,7 @@ export default function BuildsPage() {
           <TabsTrigger value="failed">Failed</TabsTrigger>
           <TabsTrigger value="pending">Pending</TabsTrigger>
         </TabsList>
-        
+
         <TabsContent value="all">
           <Card>
             <CardHeader>
@@ -1002,41 +1016,41 @@ export default function BuildsPage() {
               {isLoading ? (
                 <div>Loading...</div>
               ) : (
-                <BuildTable 
-                  builds={builds || []} 
+                <BuildTable
+                  builds={builds || []}
                   onSelectBuild={setSelectedBuildId}
                 />
               )}
             </CardContent>
           </Card>
         </TabsContent>
-        
+
         <TabsContent value="success">
           <Card>
             <CardContent className="pt-6">
-              <BuildTable 
+              <BuildTable
                 builds={builds?.filter(b => b.status === 'success') || []}
                 onSelectBuild={setSelectedBuildId}
               />
             </CardContent>
           </Card>
         </TabsContent>
-        
+
         <TabsContent value="failed">
           <Card>
             <CardContent className="pt-6">
-              <BuildTable 
+              <BuildTable
                 builds={builds?.filter(b => b.status === 'failed') || []}
                 onSelectBuild={setSelectedBuildId}
               />
             </CardContent>
           </Card>
         </TabsContent>
-        
+
         <TabsContent value="pending">
           <Card>
             <CardContent className="pt-6">
-              <BuildTable 
+              <BuildTable
                 builds={builds?.filter(b => b.status === 'pending') || []}
                 onSelectBuild={setSelectedBuildId}
               />
@@ -1052,6 +1066,7 @@ export default function BuildsPage() {
 ### 5.2 Create Build Terminal Component
 
 **frontend/src/components/build-terminal.tsx:**
+
 ```typescript
 'use client';
 
@@ -1068,9 +1083,9 @@ interface BuildTerminalProps {
 export function BuildTerminal({ buildId }: BuildTerminalProps) {
   const [logs, setLogs] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  
+
   const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL}/builds/${buildId}/logs`;
-  
+
   const { isConnected } = useWebSocket(wsUrl, {
     onMessage: (message) => {
       if (message.type === 'log') {
@@ -1096,7 +1111,7 @@ export function BuildTerminal({ buildId }: BuildTerminalProps) {
           Build ID: {buildId}
         </span>
       </div>
-      
+
       <Card className="bg-black p-4">
         <ScrollArea className="h-[400px]">
           <pre className="text-green-400 text-xs font-mono">
@@ -1115,6 +1130,7 @@ export function BuildTerminal({ buildId }: BuildTerminalProps) {
 ### 5.3 Create Build Table Component
 
 **frontend/src/components/build-table.tsx:**
+
 ```typescript
 'use client';
 
@@ -1145,7 +1161,7 @@ export function BuildTable({ builds, onSelectBuild }: BuildTableProps) {
       success: 'success',
       failed: 'destructive',
     };
-    
+
     return <Badge variant={variants[status]}>{status}</Badge>;
   };
 
@@ -1217,6 +1233,7 @@ export function BuildTable({ builds, onSelectBuild }: BuildTableProps) {
 ### 6.1 Create API Docs Page
 
 **frontend/src/app/dashboard/api-docs/page.tsx:**
+
 ```typescript
 'use client';
 
@@ -1231,7 +1248,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 export default function APIDocsPage() {
   const [selectedWorkflow, setSelectedWorkflow] = useState<string>('');
-  
+
   const { data: workflows } = useQuery({
     queryKey: ['workflows'],
     queryFn: () => apiClient.getWorkflows(),
@@ -1337,6 +1354,7 @@ npm install -D @testing-library/react @testing-library/jest-dom jest jest-enviro
 ```
 
 **frontend/jest.config.js:**
+
 ```javascript
 const nextJest = require('next/jest');
 
@@ -1353,6 +1371,7 @@ module.exports = createJestConfig(customJestConfig);
 ```
 
 **frontend/jest.setup.js:**
+
 ```javascript
 import '@testing-library/jest-dom';
 ```
@@ -1365,6 +1384,7 @@ npx playwright install
 ```
 
 **frontend/playwright.config.ts:**
+
 ```typescript
 import { defineConfig, devices } from '@playwright/test';
 
@@ -1406,6 +1426,7 @@ npm run build
 ### 8.2 Docker Deployment
 
 **frontend/Dockerfile:**
+
 ```dockerfile
 FROM node:20-alpine AS base
 
@@ -1438,6 +1459,7 @@ CMD ["node", "server.js"]
 ### 8.3 Environment Configuration
 
 **frontend/.env.production:**
+
 ```env
 NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 NEXT_PUBLIC_WS_URL=wss://api.yourdomain.com
@@ -1448,6 +1470,7 @@ NEXT_PUBLIC_WS_URL=wss://api.yourdomain.com
 ## Next Steps
 
 1. **Run the development server:**
+
    ```bash
    cd frontend
    npm run dev
