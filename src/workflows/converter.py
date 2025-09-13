@@ -133,16 +133,23 @@ class WorkflowConverter:
             if isinstance(node, dict) and isinstance(node.get("id"), int):
                 node_map[int(node["id"])] = node
 
-        # Detect simple pass-through nodes like Reroute and precompute their upstream source
+        # Detect simple pass-through nodes like Reroute (including vendor variants)
+        # and precompute their upstream source
         # In UI format, Reroute has a single input and a single output, but ComfyUI server
         # has no executable "Reroute" class; prompts containing it will fail.
         # We flatten Reroute by reconnecting its consumers to the Reroute's upstream source.
         reroute_upstream: dict[int, tuple[int, int]] = {}
+
+        def _is_reroute(node_type: str) -> bool:
+            t = (node_type or "").strip().lower()
+            # Handle names like "Reroute", "Reroute (rgthree)", "Reroute Int (xyz)" etc.
+            return t.startswith("reroute")
+
         try:
             for node in ui_workflow.get("nodes", []) or []:
                 if not isinstance(node, dict):
                     continue
-                if str(node.get("type")) != "Reroute":
+                if not _is_reroute(str(node.get("type"))):
                     continue
                 nid = node.get("id")
                 if not isinstance(nid, int):
@@ -188,8 +195,11 @@ class WorkflowConverter:
                 logger.warning(f"Node {node_id} has no type field")
                 continue
 
-            # Skip UI-only helpers like Reroute or TextInput_ in the API prompt
-            if class_type in ("Reroute", "TextInput_", "ShowText|pysssss"):
+            # Skip UI-only helpers like Reroute variants or TextInput_ in the API prompt
+            if _is_reroute(class_type) or class_type in (
+                "TextInput_",
+                "ShowText|pysssss",
+            ):
                 continue
 
             # Build API node
