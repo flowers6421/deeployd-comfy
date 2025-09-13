@@ -26,24 +26,26 @@ async function loadComfyJson() {
     const vendorPath = path.join(__dirname, 'vendor', 'comfyui-json', 'dist', 'index.js');
     try {
         if (fs.existsSync(vendorPath)) {
-            // Load vendored comfyui-json first (no external install required)
-            // eslint-disable-next-line global-require, import/no-unresolved
-            return require(vendorPath);
+            // Vendored library is ESM; use dynamic import via file URL
+            const fileUrl = `file://${vendorPath}`;
+            const mod = await import(fileUrl);
+            return mod;
         }
-    } catch (_) {
+    } catch (err) {
+        console.error(`Failed to load vendored comfyui-json: ${err && err.message}`);
         // Continue to fallback attempts below
     }
     try {
-        // Prefer CJS require when available
-        // eslint-disable-next-line global-require, import/no-unresolved
-        return require('comfyui-json');
+        // Try to import from node_modules (ESM)
+        const mod = await import('comfyui-json');
+        return mod;
     } catch (e) {
+        // Last resort, try CJS require if a compat build exists
         try {
-            // Fallback to dynamic ESM import
-            const mod = await import('comfyui-json');
-            return mod;
-        } catch (err) {
-            throw new Error(`comfyui-json not available: ${(err && err.message) || String(err)}`);
+            // eslint-disable-next-line global-require, import/no-unresolved
+            return require('comfyui-json');
+        } catch (err2) {
+            throw new Error(`comfyui-json not available: ${(e && e.message) || String(e)}`);
         }
     }
 }
