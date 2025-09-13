@@ -2,6 +2,13 @@
 
 Transform ComfyUI workflows into production-ready Docker containers with automatic API generation and documentation.
 
+## Monorepo Overview
+
+This repository contains both the backend API and a modern web dashboard:
+
+- `src/` – FastAPI backend exposing `/api/v1` endpoints and WebSocket updates
+- `frontend/` – Next.js 15 + TypeScript dashboard for managing workflows, builds, and executions
+
 ## What it does
 
 Takes ComfyUI workflows → Makes Docker containers → Generates APIs → Creates Documentation
@@ -96,6 +103,7 @@ The tool generates:
 ## Running the Container
 
 ### Single Container Mode (ComfyUI only)
+
 ```bash
 # Build container from workflow
 python main.py build-workflow tests/real_workflow.json --image-name comfyui-workflow --tag latest
@@ -108,6 +116,7 @@ docker run -d --name comfyui \
 ```
 
 ### Multi-Container Mode with API (Recommended)
+
 ```bash
 # Build API container
 docker build -f docker/api/Dockerfile -t workflow-api .
@@ -122,6 +131,7 @@ docker-compose up -d
 ## API Usage
 
 ### Generate Image
+
 ```bash
 # Simple generation
 curl -X POST http://localhost:8000/api/generate \
@@ -143,12 +153,14 @@ curl -X POST "http://localhost:8000/api/generate?wait=false" \
 ```
 
 ### Check Status
+
 ```bash
 curl http://localhost:8000/api/status/{prompt_id}
 # Returns: {"status": "completed", "images": [...]}
 ```
 
 ### WebSocket Progress
+
 ```javascript
 const ws = new WebSocket('ws://localhost:8000/ws/{prompt_id}');
 ws.onmessage = (event) => {
@@ -159,6 +171,62 @@ ws.onmessage = (event) => {
 
 ### API Documentation
 Visit `http://localhost:8000/docs` for interactive OpenAPI documentation.
+
+## Frontend Dashboard (Next.js)
+
+An optional web UI lives under `frontend/` and provides:
+
+- Upload/validate workflows, view parameters and dependencies
+- Trigger and monitor container builds with live logs
+- Browse executions (queue/history/gallery) and run presets
+- Embedded API tester and generated cURL snippets
+
+### Requirements
+
+- Node.js 20+ (recommended) and npm 10+
+
+### Quick start
+
+```bash
+cd frontend
+npm install
+
+# Configure API targets (defaults shown)
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+echo "NEXT_PUBLIC_WS_URL=ws://localhost:8000" >> .env.local
+
+# Run the dev server
+npm run dev
+# Open http://localhost:3000
+```
+
+Build and run in production:
+
+```bash
+cd frontend
+npm run build
+npm start
+```
+
+The dashboard talks to the backend at `NEXT_PUBLIC_API_URL` (REST) and `NEXT_PUBLIC_WS_URL` (WebSocket). If you run the API on a different host/port, update `.env.local` accordingly.
+
+See `frontend/README.md` for more details on the tech stack and project layout.
+
+### Local Dev (dev-up)
+
+Run API + frontend together without extra tooling:
+
+```bash
+bash scripts/dev-up.sh
+```
+
+Environment overrides:
+
+- `API_HOST` (default: `127.0.0.1`)
+- `API_PORT` (default: `8000`)
+- `FRONTEND_PORT` (default: `3000`)
+
+The script forwards `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` to the Next.js dev server.
 
 ## License
 
