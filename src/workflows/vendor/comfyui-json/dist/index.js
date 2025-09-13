@@ -280,14 +280,22 @@ async function computeExternalFilesMap(props) {
 }
 
 // src/getBranchInfo.tsx
-import {z} from "zod";
-var extractRepoName = function(repoUrl) {
+import { z } from "zod";
+var RepoSchema = z.object({
+  default_branch: z.string()
+});
+var BranchInfoSchema = z.object({
+  commit: z.object({
+    sha: z.string()
+  })
+});
+function extractRepoName(repoUrl) {
   const url = new URL(repoUrl);
   const pathParts = url.pathname.split("/");
   const repoName = pathParts[2].replace(".git", "");
   const author = pathParts[1];
   return `${author}/${repoName}`;
-};
+}
 async function getBranchInfo(gitUrl) {
   const repoName = extractRepoName(gitUrl);
   console.log(`Fetching repo info... ${gitUrl}`);
@@ -308,19 +316,20 @@ async function getBranchInfo(gitUrl) {
   });
   return branchInfo;
 }
-var RepoSchema = z.object({
-  default_branch: z.string()
-});
-var BranchInfoSchema = z.object({
-  commit: z.object({
-    sha: z.string()
-  })
-});
 
 // src/computeCustomNodesMap.ts
 async function fetchExtensionNodeMap() {
   return await (await fetch("https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json")).json();
 }
+var BLACKLISTED_URLS = ["https://github.com/Seedsa/Fooocus_Nodes"];
+var filterBlacklistedUrls = (data) => {
+  Object.entries(data).forEach(([key, _]) => {
+    if (BLACKLISTED_URLS.includes(key)) {
+      delete data[key];
+    }
+  });
+  return data;
+};
 async function getCustomNodesMap() {
   return await (await fetch("https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json")).json();
   console.log("Getting extension-node-map.json");
@@ -434,6 +443,16 @@ async function computeCustomNodesMapJson({
       conflictNodeMap[classType] = custom_nodes.custom_nodes.filter((x) => {
         return urls.some((item) => x.files.includes(item.url));
       });
+      conflictNodeMap[classType] = conflictNodeMap[classType].map((node) => {
+        return {
+          url: node.reference,
+          name: node.title,
+          files: node.files,
+          install_type: node.install_type,
+          ...node.pip && { pip: node.pip },
+          hash: null
+        };
+      });
     }
     return classTypeData ? { node: value, classTypeData } : null;
   }).filter((item) => item !== null);
@@ -502,21 +521,12 @@ async function computeCustomNodesMapJson({
     conflictNodes: conflictNodeMap
   };
 }
-var BLACKLISTED_URLS = ["https://github.com/Seedsa/Fooocus_Nodes"];
-var filterBlacklistedUrls = (data) => {
-  Object.entries(data).forEach(([key, _]) => {
-    if (BLACKLISTED_URLS.includes(key)) {
-      delete data[key];
-    }
-  });
-  return data;
-};
 
 // src/generateDependencyGraph.ts
-import {z as z3} from "zod";
+import { z as z3 } from "zod";
 
 // src/workflowAPIType.ts
-import {z as z2} from "zod";
+import { z as z2 } from "zod";
 var workflowType = z2.object({
   last_node_id: z2.number(),
   last_link_id: z2.number(),
@@ -557,6 +567,13 @@ var FileReferencesType = z2.record(z2.array(FileReferenceType));
 var workflowAPIType = z2.record(workflowAPINodeType);
 
 // src/generateDependencyGraph.ts
+var DependencyGraphType = z3.object({
+  comfyui: z3.string(),
+  missing_nodes: z3.array(z3.string()),
+  custom_nodes: CustomNodesDepsType,
+  models: FileReferencesType,
+  files: FileReferencesType
+});
 async function generateDependencyGraph({
   workflow_api,
   snapshot,
@@ -621,13 +638,6 @@ async function generateDependencyGraphJson({
     conflicting_nodes: conflictNodes
   };
 }
-var DependencyGraphType = z3.object({
-  comfyui: z3.string(),
-  missing_nodes: z3.array(z3.string()),
-  custom_nodes: CustomNodesDepsType,
-  models: FileReferencesType,
-  files: FileReferencesType
-});
 
 // src/graphToPrompt.ts
 async function graphToPrompt(graph) {

@@ -63,13 +63,18 @@ class ComfyUIJsonResolver:
                 cwd=bridge_dir,
             )
             # Expect usage text on stderr/stdout with exit code 1 when no args are passed
-            if result.returncode != 1 or (
-                "Usage:" not in (result.stderr or "")
-                and "Usage:" not in (result.stdout or "")
-            ):
+            stderr = result.stderr or ""
+            stdout = result.stdout or ""
+            has_usage = (
+                ("Usage:" in stderr)
+                or ("Usage:" in stdout)
+                or ("Commands:" in stderr)
+                or ("Commands:" in stdout)
+            )
+            if result.returncode != 1 or not has_usage:
                 logger.warning(
                     "Node bridge did not emit expected usage output; proceeding anyway.\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                    f"stdout: {stdout}\nstderr: {stderr}"
                 )
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.warning(

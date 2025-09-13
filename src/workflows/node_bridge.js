@@ -32,9 +32,10 @@ async function loadComfyJson() {
             return mod;
         }
     } catch (err) {
-        console.error(`Failed to load vendored comfyui-json: ${err && err.message}`);
+        console.error(`Failed to load vendored comfyui-json: ${(err && err.message) || String(err)}`);
         // Continue to fallback attempts below
     }
+
     try {
         // Try to import from node_modules (ESM)
         const mod = await import('comfyui-json');
