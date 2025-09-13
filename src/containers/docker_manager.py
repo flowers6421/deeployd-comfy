@@ -1,12 +1,11 @@
 """Docker management for container operations."""
 
+import typing as t
 from pathlib import Path
 from typing import Any
 
 import docker
-from docker import DockerClient
 from docker.errors import APIError, BuildError, ImageNotFound
-from docker.models.images import Image
 
 
 class DockerBuildError(Exception):
@@ -18,7 +17,7 @@ class DockerBuildError(Exception):
 class DockerManager:
     """Manages Docker operations for workflow containerization."""
 
-    def __init__(self, client: DockerClient | None = None):
+    def __init__(self, client: Any | None = None):
         """Initialize Docker manager.
 
         Args:
@@ -51,7 +50,7 @@ class DockerManager:
             Dictionary with Docker system info
         """
         try:
-            return self.client.info()
+            return t.cast(dict[str, Any], self.client.info())
         except APIError as e:
             return {"error": str(e)}
 
@@ -133,7 +132,7 @@ class DockerManager:
         cache_from: list[str] | None = None,
         target: str | None = None,
         platform: str | None = None,
-    ):
+    ) -> t.Iterator[dict[str, Any]]:
         """Stream a Docker build yielding log chunks as they arrive.
 
         Yields dictionaries from Docker with keys like 'stream', 'status', or 'error'.
@@ -190,7 +189,7 @@ class DockerManager:
 
     def pull_image(
         self, tag: str, auth_config: dict[str, str] | None = None
-    ) -> Image | None:
+    ) -> Any | None:
         """Pull image from registry.
 
         Args:
@@ -272,7 +271,7 @@ class DockerManager:
         """
         try:
             image = self.client.images.get(tag)
-            return image.attrs.get("Size", 0)
+            return int(image.attrs.get("Size", 0) or 0)
         except ImageNotFound:
             return 0
 
@@ -295,25 +294,45 @@ class DockerManager:
                 repository = target
                 tag = "latest"
 
-            return image.tag(repository, tag)
+            return bool(image.tag(repository, tag))
         except (ImageNotFound, APIError):
             return False
 
     def run_container(
-        self, image: str, command: str | None = None, detach: bool = False, **kwargs
-    ):
+        self,
+        image: str,
+        command: str | None = None,
+        detach: bool = False,
+        enable_gpu: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         """Run a container.
 
         Args:
             image: Image to run
             command: Command to execute
             detach: Run in detached mode
+            enable_gpu: Whether to enable GPU support if available
             **kwargs: Additional arguments for container run
 
         Returns:
             Container object
         """
         try:
+            # Add GPU support if available and requested
+            if enable_gpu and "device_requests" not in kwargs:
+                try:
+                    runtimes = self.client.info().get("Runtimes", {})
+                    if isinstance(runtimes, dict) and "nvidia" in runtimes:
+                        kwargs["device_requests"] = [
+                            docker.types.DeviceRequest(
+                                device_ids=["all"], capabilities=[["gpu"]]
+                            )
+                        ]
+                except Exception:
+                    # Ignore GPU detection errors; run without GPU
+                    pass
+
             return self.client.containers.run(
                 image=image, command=command, detach=detach, **kwargs
             )
