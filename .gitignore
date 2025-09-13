@@ -120,6 +120,10 @@ build-*/
 !src/workflows/vendor/comfyui-json/dist/index.js
 !src/workflows/vendor/comfyui-json/dist/index.d.ts
 
+# Do not ignore Next.js utility library under frontend
+!frontend/src/lib/
+!frontend/src/lib/**
+
 # Model files (large files)
 *.safetensors
 *.ckpt
