@@ -112,6 +112,13 @@ docker-compose.override.yml
 # Build outputs
 build/
 build-*/
+!
+# Allow vendored comfyui-json dist to be tracked
+!src/workflows/vendor/
+!src/workflows/vendor/comfyui-json/
+!src/workflows/vendor/comfyui-json/dist/
+!src/workflows/vendor/comfyui-json/dist/index.js
+!src/workflows/vendor/comfyui-json/dist/index.d.ts
 
 # Model files (large files)
 *.safetensors

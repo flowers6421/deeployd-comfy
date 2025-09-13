@@ -6,15 +6,23 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from src.api import event_bus
 from src.api.exceptions import APIError
-from src.api.routers import container_router, model_router, workflow_router
 from src.api.openapi_generator import OpenAPIGenerator
+from src.api.routers import (
+    container_router,
+    execution_router,
+    model_router,
+    workflow_router,
+)
+from src.api.routers import endpoint_router
+from src.api.websocket_manager import WebSocketManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -137,24 +145,56 @@ def create_app() -> FastAPI:
             "description": "API for ComfyUI workflow to container translation",
             "workflows_loaded": 0,  # Will be updated when workflows are loaded
         }
-    
+
+    # Instantiate WebSocket manager and attach to event bus
+    ws_manager = WebSocketManager(max_connections=100)
+    app.state.ws_manager = ws_manager
+    event_bus.set_manager(ws_manager)
+
+    # WebSocket endpoint supporting rooms (e.g., room=build:{id})
+    @app.websocket("/ws/{client_id}")
+    async def ws_endpoint(websocket: WebSocket, client_id: str):
+        params = dict(websocket.query_params)
+        room = params.get("room")
+        # connect and keep alive
+        accepted = await ws_manager.connect(websocket, client_id=client_id, room=room)
+        if not accepted:
+            return
+        try:
+            while True:
+                # Await client messages (optional)
+                msg = await websocket.receive_json()
+                await ws_manager.handle_client_message(client_id, msg)
+        except WebSocketDisconnect:
+            await ws_manager.disconnect(client_id)
+
     # OpenAPI spec endpoint
     @app.get(f"{settings.api_prefix}/openapi.json")
     async def get_openapi_spec():
         """Get OpenAPI specification."""
         generator = OpenAPIGenerator(app)
-        
+
         # Load workflows if available
         workflows = {}
         # TODO: Load actual workflows from configuration or database
-        
+
         spec = generator.generate_full_spec(
-            title="ComfyUI Workflow API",
-            version="1.0.0",
-            workflows=workflows
+            title="ComfyUI Workflow API", version="1.0.0", workflows=workflows
         )
-        
+
         return spec
+
+    # Minimal WebSocket endpoint (stub) to satisfy clients connecting to ws://host/ws/{id}
+    @app.websocket("/ws/{client_id}")
+    async def ws_stub(websocket: WebSocket, client_id: str):  # noqa: ARG001
+        await websocket.accept()
+        try:
+            # Keep connection alive with occasional heartbeat
+            while True:
+                await websocket.send_json({"type": "heartbeat", "ts": time.time()})
+                await asyncio.sleep(30)
+        except WebSocketDisconnect:
+            pass
 
     # Register routers
     app.include_router(
@@ -170,7 +210,19 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(
+        execution_router.router,
+        prefix=f"{settings.api_prefix}/executions",
+        tags=["executions"],
+    )
+
+    app.include_router(
         model_router.router, prefix=f"{settings.api_prefix}/models", tags=["models"]
+    )
+
+    app.include_router(
+        endpoint_router.router,
+        prefix=f"{settings.api_prefix}",
+        tags=["openapi"],
     )
 
     return app

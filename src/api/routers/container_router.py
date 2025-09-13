@@ -1,75 +1,531 @@
-"""Container API router."""
+"""Container API router with build tracking endpoints."""
 
+import json
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+try:
+    from pydantic import ConfigDict  # pydantic v2
+except Exception:  # pragma: no cover
+    ConfigDict = None  # type: ignore
+from sqlmodel import Session
+
+from src.api import event_bus
+from src.containers.custom_node_installer import CustomNodeInstaller
+from src.containers.docker_manager import DockerBuildError, DockerManager
+from src.containers.dockerfile_builder import DockerfileBuilder
+from src.db.database import init_db
+from src.db.repositories import BuildRepository, WorkflowRepository
 
 router = APIRouter()
 
+# Initialize database
+db = init_db()
 
-class BuildRequest(BaseModel):
-    """Container build request."""
 
+def get_session():
+    with db.get_session() as session:
+        yield session
+
+
+class ManualNode(BaseModel):
+    name: str
+    repository: str
+    commit: str | None = None
+
+
+class BuildCreateRequest(BaseModel):
+    # Allow fields starting with `model_` (e.g., model_assets)
+    # Pydantic v2 uses model_config to control protected namespaces
+    model_config = ConfigDict(protected_namespaces=()) if 'ConfigDict' in globals() and ConfigDict is not None else None  # type: ignore
     workflow_id: str
-    base_image: str = "python:3.11-slim"
-    optimize: bool = True
+    image_name: str | None = None
+    tag: str = "latest"
+    no_cache: bool = False
+    python_version: str | None = None  # e.g., "3.11", "3.12", "3.13"
+    runtime_mode: str | None = None  # 'cpu' | 'gpu'
+    torch_version: str | None = None  # e.g., '2.7.1'
+    cuda_variant: str | None = None   # e.g., 'cu118','cu121','cu124','cu126','cu128'
+    install_nunchaku: bool | None = None
+    nunchaku_version: str | None = None
+    nunchaku_wheel_url: str | None = None
+    manual_repos: dict[str, str] | None = None  # name -> repo override
+    manual_nodes: list[ManualNode] | None = None  # extra nodes to include
+    model_assets: list[dict[str, Any]] | None = None  # {type, filename, url}
 
 
-class BuildResponse(BaseModel):
-    """Container build response."""
-
-    build_id: str
-    status: str
-    message: str
-
-
-@router.post("/build", response_model=BuildResponse)
-async def build_container(request: BuildRequest) -> BuildResponse:  # noqa: ARG001
-    """Build container from workflow.
-
-    Args:
-        request: Build request
-
-    Returns:
-        Build response with build ID
-    """
-    return BuildResponse(
-        build_id="build_123", status="building", message="Container build started"
+@router.post("/builds")
+async def create_build(
+    request: BuildCreateRequest,
+    session: Session = Depends(get_session),
+):
+    """Create a build record for a workflow."""
+    repo = BuildRepository(session)
+    image_name = request.image_name or "comfyui-workflow"
+    build = repo.create_build(
+        workflow_id=request.workflow_id,
+        image_name=image_name,
+        tag=request.tag,
     )
+    # Start real Docker build in background
+    thread = threading.Thread(
+        target=_run_docker_build,
+        args=(
+            build.id,
+            request.workflow_id,
+            image_name,
+            request.tag,
+            request.no_cache,
+            request.python_version,
+            request.runtime_mode,
+            request.torch_version,
+            request.cuda_variant,
+            bool(request.install_nunchaku or False),
+            request.nunchaku_version,
+            request.nunchaku_wheel_url,
+            request.manual_repos or {},
+            request.manual_nodes or [],
+            request.model_assets or [],
+        ),
+        daemon=True,
+    )
+    thread.start()
+    return build
+
+
+@router.get("/builds")
+async def list_builds(
+    limit: int = Query(default=25, ge=1, le=200),
+    workflow_id: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """List recent builds."""
+    repo = BuildRepository(session)
+    return repo.get_build_history(workflow_id=workflow_id, limit=limit)
 
 
 @router.get("/builds/{build_id}")
-async def get_build_status(build_id: str) -> dict[str, Any]:
-    """Get build status by ID.
+async def get_build(build_id: str, session: Session = Depends(get_session)):
+    """Get build by id (direct lookup)."""
+    repo = BuildRepository(session)
+    b = repo.get_by_id(build_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Build not found")
+    return b
 
-    Args:
-        build_id: Build identifier
 
-    Returns:
-        Build status
-    """
-    return {"build_id": build_id, "status": "completed", "progress": 100}
+@router.get("/builds/{build_id}/logs")
+async def get_build_logs(
+    build_id: str,
+    since: int | None = Query(
+        default=None, description="Return lines with seq > since"
+    ),
+    limit: int = Query(default=200, ge=1, le=1000),
+    session: Session = Depends(get_session),
+):
+    """Get incremental build logs by id."""
+    repo = BuildRepository(session)
+    logs = repo.get_build_logs(build_id, since=since, limit=limit)
+    return {
+        "build_id": build_id,
+        "logs": [
+            {"seq": l.seq, "line": l.line, "created_at": l.created_at.isoformat()}
+            for l in logs
+        ],
+        "next_since": logs[-1].seq if logs else (since or 0),
+    }
+
+
+@router.post("/builds/{build_id}/cancel")
+async def cancel_build(build_id: str, session: Session = Depends(get_session)):
+    """Cancel a running or pending build."""
+    repo = BuildRepository(session)
+    builds = repo.get_build_history(limit=500)
+    for b in builds:
+        if b.id == build_id:
+            status = b.build_status
+            if status not in ("success", "failed"):
+                repo.update_build_status(
+                    build_id,
+                    status="failed",
+                    logs=(b.build_logs or "") + "\nCANCELLED: Build cancelled by user",
+                )
+            return repo.get_by_id(build_id)
+    raise HTTPException(status_code=404, detail="Build not found")
 
 
 @router.get("/images")
 async def list_images() -> dict[str, Any]:
-    """List built container images.
-
-    Returns:
-        List of container images
-    """
+    # Placeholder for future registry integration
     return {"images": [], "total": 0}
 
 
 @router.delete("/images/{image_id}")
 async def delete_image(image_id: str) -> dict[str, Any]:
-    """Delete container image.
-
-    Args:
-        image_id: Image identifier
-
-    Returns:
-        Deletion status
-    """
     return {"status": "deleted", "image_id": image_id}
+
+
+@router.post("/builds/cleanup")
+async def cleanup_builds(session: Session = Depends(get_session)):
+    """Mark all non-terminal builds as failed and clear them from active view."""
+    repo = BuildRepository(session)
+    count = repo.cleanup_incomplete()
+    return {"cleaned": count}
+
+
+def _run_docker_build(
+    build_id: str,
+    workflow_id: str,
+    image_name: str,
+    tag: str,
+    no_cache: bool = False,
+    python_version: str | None = None,
+    runtime_mode: str | None = None,
+    torch_version: str | None = None,
+    cuda_variant: str | None = None,
+    install_nunchaku: bool = False,
+    nunchaku_version: str | None = None,
+    nunchaku_wheel_url: str | None = None,
+    manual_repos: dict[str, str] | None = None,
+    manual_nodes: list[ManualNode] | None = None,
+    model_assets: list[dict[str, Any]] | None = None,
+):
+    """Run a real Docker build and stream logs to DB and WS."""
+    local_db = init_db()
+    docker_manager = DockerManager()
+    full_tag = f"{image_name}:{tag}"
+
+    # Mark as building
+    with local_db.get_session() as session:
+        BuildRepository(session).update_build_status(
+            build_id, status="building", logs="Starting build..."
+        )
+    try:
+        import anyio
+
+        anyio.run(
+            event_bus.emit_build_event, build_id, "build_status", {"status": "building"}
+        )
+    except Exception:
+        pass
+
+    # Check Docker availability
+    if not docker_manager.is_available():
+        with local_db.get_session() as session:
+            BuildRepository(session).update_build_status(
+                build_id, status="failed", logs="ERROR: Docker daemon not available"
+            )
+        try:
+            import anyio
+
+            anyio.run(
+                event_bus.emit_build_event,
+                build_id,
+                "build_complete",
+                {"status": "failed"},
+            )
+        except Exception:
+            pass
+        return
+
+    # Prepare temp build context and Dockerfile
+    with local_db.get_session() as session:
+        wrepo = WorkflowRepository(session)
+        wf = wrepo.get(workflow_id)
+        if not wf:
+            with local_db.get_session() as s2:
+                BuildRepository(s2).update_build_status(
+                    build_id, status="failed", logs="Workflow not found"
+                )
+            return
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="build_ctx_"))
+    dockerfile_path = tmp_dir / "Dockerfile"
+
+    builder = DockerfileBuilder()
+    # Base image from requested Python version (default 3.12)
+    base_py = python_version if python_version in {"3.11", "3.12", "3.13"} else "3.12"
+    base_image = f"python:{base_py}-slim"
+    # Resolve custom nodes via comfyui-json (authoritative), including injected extensions
+    deps = wf.dependencies or {}
+    resolved_nodes = []
+    try:
+        from src.workflows.node_resolver import ComfyUIJsonResolver
+        cache_dir = tmp_dir / ".cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Write workflow to disk for resolver
+        wf_path = tmp_dir / "workflow.json"
+        wf_path.write_text(json.dumps(wf.definition or {}))
+        data = ComfyUIJsonResolver(cache_dir=cache_dir).get_comprehensive_resolution(wf_path)
+        nodes = data.get("custom_nodes", {})
+        # Apply manual overrides
+        for k, v in (manual_repos or {}).items():
+            nodes[v] = {
+                "url": v,
+                "name": k,
+                "hash": None,
+                "pip": [],
+                "install_type": "git-clone",
+            }
+        # Convert to simple metadata objects (name/repository/commit/pip)
+        class _Simple:
+            def __init__(self, name, repository, commit=None, pip=None):
+                self.name = name
+                self.repository = repository
+                self.commit_hash = commit
+                self.python_dependencies = pip or []
+        for url, info in nodes.items():
+            resolved_nodes.append(
+                _Simple(
+                    name=(info.get("name") or url.rstrip("/").split("/")[-1]),
+                    repository=url,
+                    commit=info.get("hash"),
+                    pip=info.get("pip", []),
+                )
+            )
+        # Persist resolved nodes for audit
+        with local_db.get_session() as session:
+            BuildRepository(session).set_resolved_nodes(
+                build_id,
+                [
+                    {
+                        "name": n.name,
+                        "repository": n.repository,
+                        "commit": n.commit_hash,
+                        "pip": n.python_dependencies,
+                    }
+                    for n in resolved_nodes
+                ],
+            )
+    except Exception as e:
+        # Proceed without resolved nodes if resolution fails
+        try:
+            import anyio
+            anyio.run(
+                event_bus.emit_build_event,
+                build_id,
+                "build_log",
+                {"line": f"Warning: comfyui-json resolution failed: {e}"},
+            )
+        except Exception:
+            pass
+
+    # Build manual NodeMetadata list
+    extra_nodes = []
+    try:
+        from src.containers.custom_node_installer import NodeMetadata
+
+        for mn in manual_nodes or []:
+            if not mn.repository:
+                continue
+            name = mn.name or mn.repository.rstrip("/").split("/")[-1].replace(
+                ".git", ""
+            )
+            extra_nodes.append(
+                NodeMetadata(name=name, repository=mn.repository, commit_hash=mn.commit)
+            )
+        # Append extra nodes to resolved
+        if extra_nodes:
+            resolved_nodes = (resolved_nodes or []) + extra_nodes
+            # Update persisted list to include extras as well
+            with local_db.get_session() as session:
+                BuildRepository(session).set_resolved_nodes(
+                    build_id,
+                    [
+                        {
+                            "name": n.name,
+                            "repository": n.repository,
+                            "commit": n.commit_hash,
+                            "pip": getattr(n, "python_dependencies", []),
+                        }
+                        for n in resolved_nodes
+                    ],
+                )
+    except Exception:
+        pass
+
+    # Generate Dockerfile: include resolved custom nodes and model downloads
+    try:
+        dockerfile_content = builder.build_for_workflow(
+            dependencies=deps,
+            custom_nodes=resolved_nodes if resolved_nodes else None,
+            base_image=base_image,
+            use_cuda=(str(runtime_mode).lower() == 'gpu'),
+            torch_version=torch_version,
+            cuda_variant=cuda_variant,
+            python_version=python_version,
+            enable_nunchaku=install_nunchaku,
+            nunchaku_version=nunchaku_version,
+            nunchaku_wheel_url=nunchaku_wheel_url,
+            extra_commands=builder.add_model_url_downloads(model_assets or []),
+        )
+        dockerfile_path.write_text(dockerfile_content)
+    except Exception as e:
+        # Fail fast if Dockerfile generation fails
+        with local_db.get_session() as session:
+            BuildRepository(session).update_build_status(
+                build_id, status="failed", logs=f"ERROR generating Dockerfile: {e}"
+            )
+        try:
+            import anyio
+
+            anyio.run(
+                event_bus.emit_build_event,
+                build_id,
+                "build_complete",
+                {"status": "failed"},
+            )
+        except Exception:
+            pass
+        return
+
+    # Stream logs
+    try:
+        for chunk in docker_manager.stream_build(
+            dockerfile_path=str(dockerfile_path),
+            context_path=str(tmp_dir),
+            tag=full_tag,
+            use_cache=not no_cache,
+        ):
+            line = None
+            if isinstance(chunk, dict):
+                line = chunk.get("stream") or chunk.get("status") or ""
+            else:
+                line = str(chunk)
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            with local_db.get_session() as session:
+                BuildRepository(session).append_build_log(build_id, line)
+            try:
+                import anyio
+
+                anyio.run(
+                    event_bus.emit_build_event, build_id, "build_log", {"line": line}
+                )
+            except Exception:
+                pass
+
+        # Success
+        size = docker_manager.get_image_size(full_tag)
+        with local_db.get_session() as session:
+            BuildRepository(session).update_build_status(
+                build_id,
+                status="success",
+                logs="Build completed successfully",
+                image_size=size,
+            )
+        try:
+            import anyio
+
+            anyio.run(
+                event_bus.emit_build_event,
+                build_id,
+                "build_complete",
+                {"status": "success"},
+            )
+        except Exception:
+            pass
+    except DockerBuildError as e:
+        with local_db.get_session() as session:
+            BuildRepository(session).update_build_status(
+                build_id, status="failed", logs=f"ERROR: {e}"
+            )
+        try:
+            import anyio
+
+            anyio.run(
+                event_bus.emit_build_event,
+                build_id,
+                "build_complete",
+                {"status": "failed"},
+            )
+        except Exception:
+            pass
+
+
+class VerifyNodesRequest(BaseModel):
+    nodes: list[str] | None = None  # names of directories or repos to look for
+
+
+@router.post("/builds/{build_id}/verify_nodes")
+async def verify_custom_nodes(
+    build_id: str,
+    request: VerifyNodesRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    """Run a short container to list /app/ComfyUI/custom_nodes and verify presence.
+
+    Body can include {"nodes": ["ComfyUI-KJNodes", "ComfyUI_IPAdapter_plus", "ComfyUI-GGUF"]}
+    If omitted, attempts to derive expected nodes from stored workflow dependencies.
+    """
+    repo = BuildRepository(session)
+    build = repo.get_by_id(build_id)
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    image = f"{build.image_name}:{build.tag}"
+
+    # Derive default expected nodes from workflow dependencies
+    expect: set[str] = set()
+    if not request or not request.nodes:
+        wrepo = WorkflowRepository(session)
+        wf = wrepo.get(build.workflow_id)
+        deps = (wf.dependencies or {}) if wf else {}
+        for item in deps.get("custom_nodes", []) or []:
+            if isinstance(item, dict):
+                # Try repository or class_type
+                url = item.get("repository") or ""
+                if url:
+                    expect.add(url.rstrip("/").split("/")[-1].replace(".git", ""))
+                elif item.get("class_type"):
+                    expect.add(
+                        str(item["class_type"]).replace("|", "_").replace(" ", "_")
+                    )
+            elif isinstance(item, str):
+                expect.add(item.replace("|", "_").replace(" ", "_"))
+    else:
+        expect = set(request.nodes)
+
+    # Run a lightweight container to list custom_nodes directory
+    try:
+        import docker
+
+        client = docker.from_env()
+        cmd = (
+            "python - <<'PY'\n"
+            "import os, json; d='/app/ComfyUI/custom_nodes';\n"
+            "print(json.dumps(sorted([x for x in os.listdir(d) if os.path.isdir(os.path.join(d,x))])))\n"
+            "PY"
+        )
+        output: bytes = client.containers.run(
+            image=image, command=["bash", "-lc", cmd], remove=True
+        )
+        listing = json.loads(output.decode().strip() or "[]")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Verification container error: {e}"
+        )
+
+    listing_set = set(listing)
+    present = sorted(
+        [
+            name
+            for name in expect
+            if any(name in entry or entry in name for entry in listing_set)
+        ]
+    )
+    missing = sorted(list(expect.difference(set(present))))
+
+    return {
+        "image": image,
+        "custom_nodes_dir": listing,
+        "expected": sorted(list(expect)),
+        "present": present,
+        "missing": missing,
+        "ok": len(missing) == 0,
+    }

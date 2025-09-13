@@ -1,6 +1,5 @@
 {
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.61",
-    "comfyui-json": "^0.1.31"
+    "@anthropic-ai/claude-code": "^1.0.61"
   }
 }

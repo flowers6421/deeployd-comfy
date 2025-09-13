@@ -90,19 +90,46 @@ class WorkflowExecutor:
             "lora_strength": ("85", "inputs", "strength_model"),
         }
         
-        # Inject parameters
+        # First, generic mapping: if a parameter name matches an input field in any node
         for param_name, param_value in parameters.items():
-            if param_name in param_map:
+            applied = False
+            # Known aliases
+            if param_name == "prompt":
+                # Inject into all CLIPTextEncode text inputs
+                for node in workflow.values():
+                    if isinstance(node, dict) and node.get("class_type") == "CLIPTextEncode":
+                        node.setdefault("inputs", {})
+                        node["inputs"]["text"] = param_value
+                        applied = True
+            if param_name == "saveimage_filename_prefix":
+                for node in workflow.values():
+                    if isinstance(node, dict) and node.get("class_type") == "SaveImage":
+                        node.setdefault("inputs", {})
+                        node["inputs"]["filename_prefix"] = param_value
+                        applied = True
+
+            # Direct input name match
+            for node in workflow.values():
+                if not isinstance(node, dict):
+                    continue
+                inputs = node.get("inputs", {})
+                if param_name in inputs:
+                    # Skip connections like [node_id, slot]
+                    if not (isinstance(inputs[param_name], list) and len(inputs[param_name]) == 2):
+                        inputs[param_name] = param_value
+                        applied = True
+            # Fallback to legacy hardcoded mapping if still not applied
+            if not applied and param_name in param_map:
                 node_id, *path = param_map[param_name]
                 if node_id in workflow:
-                    # Navigate to the parameter location
                     target = workflow[node_id]
                     for key in path[:-1]:
                         target = target[key]
-                    # Set the value
                     target[path[-1]] = param_value
-                    logger.info(f"Injected {param_name}={param_value} into node {node_id}")
-        
+                    applied = True
+            if applied:
+                logger.info(f"Injected {param_name} into workflow")
+
         return workflow
     
     async def submit_workflow(

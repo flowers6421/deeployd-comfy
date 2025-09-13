@@ -62,6 +62,20 @@ class CustomNodeInstaller:
         self._node_mapping_cache_path = (
             self.cache_dir / "node-class-mappings.json" if self.cache_dir else None
         )
+        # Known mappings for GGUF-related nodes (ComfyUI-GGUF)
+        self._known_gguf_nodes: dict[str, str] = {
+            "UnetLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+            "DualCLIPLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+            "CLIPLoaderGGUF": "https://github.com/city96/ComfyUI-GGUF",
+        }
+        # Additional known patterns/mappings
+        self._known_mappings: dict[str, str] = {
+            "IPAdapterApply": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "IPAdapterEncoder": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "ComfyUI_IPAdapter_plus": "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
+            "KJNodes": "https://github.com/kijai/ComfyUI-KJNodes",
+            "ComfyUI-KJNodes": "https://github.com/kijai/ComfyUI-KJNodes",
+        }
 
     def extract_custom_nodes(
         self, workflow_nodes: dict[str, Any]
@@ -159,6 +173,13 @@ class CustomNodeInstaller:
         Returns:
             Repository URL if found, None otherwise
         """
+        # Quick: known GGUF nodes
+        if class_name in self._known_gguf_nodes:
+            return self._known_gguf_nodes[class_name]
+        # Quick: additional known mappings
+        if class_name in self._known_mappings:
+            return self._known_mappings[class_name]
+
         # Check cache first
         if class_name in self._node_mapping_cache:
             return self._node_mapping_cache[class_name]
@@ -203,6 +224,14 @@ class CustomNodeInstaller:
         except Exception:
             # Fallback silently - we'll use manual input
             pass
+
+        # Pattern fallbacks
+        if class_name.endswith("GGUF") or "GGUF" in class_name:
+            return "https://github.com/city96/ComfyUI-GGUF"
+        if "IPAdapter" in class_name:
+            return "https://github.com/cubiq/ComfyUI_IPAdapter_plus"
+        if "KJNodes" in class_name or class_name in {"SetNode", "GetNode", "SetGet"}:
+            return "https://github.com/kijai/ComfyUI-KJNodes"
 
         return None
 
@@ -815,12 +844,19 @@ class CustomNodeInstaller:
         lines.append("WORKDIR /app/custom_nodes")
         lines.append("")
 
+        def _safe_dir(name: str) -> str:
+            allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+            name = (name or "custom_node").replace(" ", "_")
+            name = name.replace("/", "_").replace("\\", "_")
+            return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
         for node in nodes:
-            lines.append(f"# Install {node.name}")
-            lines.append(f"RUN git clone {node.repository} {node.name}")
+            safe_name = _safe_dir(node.name)
+            lines.append(f"# Install {safe_name}")
+            lines.append(f"RUN git clone {node.repository} {safe_name}")
 
             if node.commit_hash:
-                lines.append(f"RUN cd {node.name} && git checkout {node.commit_hash}")
+                lines.append(f"RUN cd {safe_name} && git checkout {node.commit_hash}")
 
             if node.python_dependencies:
                 deps = " ".join(node.python_dependencies)
@@ -970,10 +1006,17 @@ class CustomNodeInstaller:
         """
         commands = []
 
+        def _safe_dir(name: str) -> str:
+            allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+            name = (name or "custom_node").replace(" ", "_")
+            name = name.replace("/", "_").replace("\\", "_")
+            return "".join(ch for ch in name if ch in allowed) or "custom_node"
+
         # Clone all repositories
         for node in nodes:
+            safe_name = _safe_dir(node.name)
             commands.append(
-                f"RUN git clone {node.repository} " f"/app/custom_nodes/{node.name}"
+                f"RUN git clone {node.repository} " f"/app/custom_nodes/{safe_name}"
             )
 
         # Collect all Python dependencies

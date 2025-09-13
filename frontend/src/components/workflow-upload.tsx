@@ -105,7 +105,7 @@ export function WorkflowUpload({ open, onClose, onSuccess }: WorkflowUploadProps
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-4xl w-[900px]">
         <DialogHeader>
           <DialogTitle>Upload Workflow</DialogTitle>
           <DialogDescription>

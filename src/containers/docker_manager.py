@@ -123,6 +123,55 @@ class DockerManager:
         except Exception as e:
             raise DockerBuildError(f"Unexpected error during build: {e}") from e
 
+    def stream_build(
+        self,
+        dockerfile_path: str,
+        context_path: str,
+        tag: str,
+        buildargs: dict[str, str] | None = None,
+        use_cache: bool = True,
+        cache_from: list[str] | None = None,
+        target: str | None = None,
+        platform: str | None = None,
+    ):
+        """Stream a Docker build yielding log chunks as they arrive.
+
+        Yields dictionaries from Docker with keys like 'stream', 'status', or 'error'.
+        Raises DockerBuildError on failure.
+        """
+        try:
+            api = self.client.api
+            dockerfile_name = Path(dockerfile_path).name
+            params: dict[str, Any] = {
+                "path": context_path,
+                "dockerfile": dockerfile_name,
+                "tag": tag,
+                "rm": True,
+                "forcerm": True,
+                "decode": True,
+            }
+            if buildargs:
+                params["buildargs"] = buildargs
+            if not use_cache:
+                params["nocache"] = True
+            if cache_from:
+                params["cache_from"] = cache_from
+            if target:
+                params["target"] = target
+            if platform:
+                params["platform"] = platform
+
+            for chunk in api.build(**params):
+                if not chunk:
+                    continue
+                if "error" in chunk:
+                    raise DockerBuildError(chunk.get("error", "Unknown build error"))
+                yield chunk
+        except BuildError as e:
+            raise DockerBuildError(f"Build failed: {e}") from e
+        except Exception as e:
+            raise DockerBuildError(f"Unexpected error during build: {e}") from e
+
     def push_image(self, tag: str, auth_config: dict[str, str] | None = None) -> bool:
         """Push image to registry.
 
