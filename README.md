@@ -27,16 +27,41 @@ Takes ComfyUI workflows → Makes Docker containers → Generates APIs → Creat
 
 ## Quick Start
 
+### Installation
+
 ```bash
 # Clone
 git clone https://github.com/flowers6421/deeployd-comfy.git
 cd deeployd-comfy
 
-# Setup
+# Setup Python environment
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements-dev.txt
 
+# Install npm dependencies for node resolution
+npm install
+
+# Install frontend dependencies (if using the web dashboard)
+cd frontend
+npm install
+cd ..
+```
+
+### Running the Development Environment
+
+```bash
+# The dev-up.sh script will automatically install missing dependencies and start both backend and frontend
+./dev-up.sh
+
+# Or use the Makefile for a complete setup
+make install  # Installs all dependencies (Python, npm, frontend)
+make dev-up   # Runs the development environment
+```
+
+### Building Workflows
+
+```bash
 # Build workflow (interactive mode)
 python main.py build-workflow your_workflow.json
 
@@ -249,6 +274,42 @@ make backend-run API_PORT=8000
 make lint
 make type-check
 ```
+
+## Troubleshooting
+
+### Node Resolution Error (502 Bad Gateway)
+
+If you encounter a 502 error when resolving nodes with the message:
+```
+comfyui-json resolution failed: Failed to resolve workflow: comfyui-json not available
+```
+
+**Solution:**
+1. Ensure npm dependencies are installed in the root directory:
+   ```bash
+   npm install
+   ```
+2. The `dev-up.sh` script will automatically install these dependencies on startup
+3. Verify the dependencies are installed:
+   ```bash
+   node src/workflows/node_bridge.js  # Should show usage instructions
+   ```
+
+### Common Issues
+
+- **Frontend not starting**: Make sure to run `npm install` in the `frontend/` directory
+- **Python dependencies**: Ensure your virtual environment is activated before installing requirements
+- **Port conflicts**: Check if ports 8000 or 3000 are already in use
+
+## Acknowledgments
+
+Special thanks to the following projects and contributors:
+
+- **[comfyui-json](https://github.com/BennyKok/comfyui-json)** by [BennyKok](https://github.com/BennyKok) - The core library for ComfyUI workflow parsing and dependency resolution
+- **[ComfyDeploy](https://github.com/BennyKok/comfydeploy)** - For the workflow deployment infrastructure and inspiration
+- **[ComfyUI Accelerator](https://github.com/loscrossos/helper_comfyUI_accel)** by [loscrossos](https://github.com/loscrossos/) - For acceleration techniques and optimizations
+- **[ComfyUI](https://github.com/comfyanonymous/ComfyUI)** - The amazing stable diffusion GUI and backend
+- **[ComfyUI-Manager](https://github.com/ltdrdata/ComfyUI-Manager)** - For the comprehensive node and model management system
 
 ## License
 
