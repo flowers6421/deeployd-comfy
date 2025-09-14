@@ -35,6 +35,12 @@ pick_uvicorn() {
 
 UVICORN_CMD=$(pick_uvicorn)
 
+# Check and install root npm dependencies for node_bridge.js
+if [[ ! -d node_modules ]] || [[ ! -d node_modules/zod ]] || [[ ! -d node_modules/litegraph.js ]]; then
+  log "Installing root npm dependencies for node resolution..."
+  npm install
+fi
+
 cleanup() {
   local ec=$?
   log "Shutting down..."
