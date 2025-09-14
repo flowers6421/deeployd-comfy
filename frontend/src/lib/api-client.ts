@@ -71,7 +71,7 @@ export const apiClient = {
     },
     async create(
       workflow_id: string,
-      opts?: { image_name?: string; tag?: string; no_cache?: boolean; python_version?: '3.11' | '3.12' | '3.13'; runtime_mode?: 'cpu' | 'gpu'; torch_version?: string; cuda_variant?: 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cpu'; manual_repos?: Record<string, string>; manual_nodes?: { name: string; repository: string; commit?: string }[]; model_assets?: { type: string; filename: string; url: string }[] }
+      opts?: { image_name?: string; tag?: string; no_cache?: boolean; python_version?: '3.11' | '3.12' | '3.13'; runtime_mode?: 'cpu' | 'gpu'; torch_version?: string; cuda_variant?: 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cpu'; manual_repos?: Record<string, string>; manual_nodes?: { name: string; repository: string; commit?: string }[]; model_assets?: { type: string; filename: string; url: string }[]; safe_mode?: boolean; accelerators?: ('xformers'|'triton'|'flash'|'sage'|'mamba')[]; compile_fallback?: boolean }
     ): Promise<ContainerBuild> {
       return http<ContainerBuild>(`/containers/builds`, {
         method: 'POST',
@@ -88,6 +88,9 @@ export const apiClient = {
           cuda_variant: opts?.cuda_variant,
           manual_nodes: opts?.manual_nodes,
           model_assets: opts?.model_assets,
+          safe_mode: opts?.safe_mode,
+          accelerators: opts?.accelerators,
+          compile_fallback: opts?.compile_fallback,
         }),
       })
     },

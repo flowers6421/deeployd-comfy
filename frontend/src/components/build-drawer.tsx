@@ -27,8 +27,11 @@ export function BuildDrawer({
   const [pythonVersion, setPythonVersion] = useState<'3.11' | '3.12' | '3.13'>('3.12')
   const [noCache, setNoCache] = useState(false)
   const [runtimeMode, setRuntimeMode] = useState<'cpu'|'gpu'>('cpu')
+  const [safeMode, setSafeMode] = useState(false)
   const [torchVersion, setTorchVersion] = useState<string>('2.7.1')
   const [cudaVariant, setCudaVariant] = useState<'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cpu'>('cpu')
+  const [accelerators, setAccelerators] = useState<('xformers'|'triton'|'flash'|'sage'|'mamba')[]>(['xformers','triton','flash','sage'])
+  const [compileFallback, setCompileFallback] = useState(true)
   const [installNunchaku, setInstallNunchaku] = useState(false)
   const [nunchakuVersion, setNunchakuVersion] = useState<string>('v0.3.1')
   const [nunchakuWheelUrl, setNunchakuWheelUrl] = useState<string>('')
@@ -77,6 +80,9 @@ export function BuildDrawer({
         runtime_mode: runtimeMode,
         torch_version: torchVersion,
         cuda_variant: runtimeMode==='gpu' ? cudaVariant : 'cpu',
+        safe_mode: safeMode,
+        accelerators: runtimeMode==='gpu' && !safeMode ? accelerators : undefined,
+        compile_fallback: compileFallback,
         install_nunchaku: installNunchaku,
         nunchaku_version: installNunchaku ? nunchakuVersion : undefined,
         nunchaku_wheel_url: installNunchaku && nunchakuWheelUrl ? nunchakuWheelUrl : undefined,
@@ -273,6 +279,15 @@ export function BuildDrawer({
                     <Button variant={runtimeMode==='gpu'?'default':'outline'} size="sm" onClick={()=>setRuntimeMode('gpu')}>GPU/CUDA</Button>
                   </div>
                 </div>
+                {runtimeMode==='gpu' && (
+                  <div>
+                    <Label>Safe Mode</Label>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input id="safe-mode" type="checkbox" checked={safeMode} onChange={(e)=>setSafeMode(e.target.checked)} />
+                      <label htmlFor="safe-mode" className="text-sm text-muted-foreground">Disable accelerators (fallback to plain Torch)</label>
+                    </div>
+                  </div>
+                )}
                 <div className="col-span-3 grid grid-cols-3 gap-3">
                   <div>
                     <Label>PyTorch</Label>
@@ -299,6 +314,27 @@ export function BuildDrawer({
                     </div>
                   )}
                 </div>
+                {runtimeMode==='gpu' && !safeMode && (
+                  <div className="col-span-3 border rounded p-2">
+                    <div className="flex items-center justify-between">
+                      <Label>Accelerators</Label>
+                      <div className="text-xs text-muted-foreground">Select precompiled accelerators</div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {(['xformers','triton','flash','sage','mamba'] as const).map(a => (
+                        <button
+                          key={a}
+                          onClick={() => setAccelerators(arr => arr.includes(a) ? arr.filter(x=>x!==a) : [...arr, a])}
+                          className={`px-2 py-1 border rounded text-xs ${accelerators.includes(a) ? 'bg-primary text-primary-foreground' : 'bg-background'}`}
+                        >{a}</button>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input id="compile-fallback" type="checkbox" checked={compileFallback} onChange={(e)=>setCompileFallback(e.target.checked)} />
+                      <label htmlFor="compile-fallback" className="text-sm text-muted-foreground">Allow compile fallback if prebuilt wheels unavailable</label>
+                    </div>
+                  </div>
+                )}
                 <div className="col-span-3 border rounded p-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
