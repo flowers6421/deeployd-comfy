@@ -321,6 +321,11 @@ class DockerfileBuilder:
         torch_version: str | None = None,
         cuda_variant: str | None = None,
         python_version: str | None = None,
+        enable_accelerators: bool = False,
+        accelerators: list[str] | None = None,
+        compile_fallback: bool = False,
+        cuda_devel_version: str = "12.9.0",
+        ubuntu_version: str = "22.04",
         nunchaku_version: str | None = None,
         nunchaku_wheel_url: str | None = None,
         enable_nunchaku: bool = False,
@@ -392,35 +397,188 @@ class DockerfileBuilder:
         lines.append("WORKDIR /app/ComfyUI")
         lines.append("")
 
-        # Install PyTorch (configurable version and CUDA variant)
-        lines.append("# Install PyTorch")
-        torch_pkgs = []
-        if torch_version:
-            # lockstep versions when provided
-            torch_pkgs = [
-                f"torch=={torch_version}",
-                f"torchvision=={_infer_vision_version(torch_version)}",
-                f"torchaudio=={_infer_audio_version(torch_version)}",
-            ]
-        else:
-            torch_pkgs = ["torch", "torchvision", "torchaudio"]
+        # Install PyTorch/accelerators
+        from src.containers.accelerator_manager import AcceleratorManager
 
-        if use_cuda:
-            variant = cuda_variant or "cu121"
-            idx = f"https://download.pytorch.org/whl/{variant}"
-            lines.append(
-                "RUN pip install --no-cache-dir "
-                + " ".join(torch_pkgs)
-                + f" --index-url {idx}"
+        if enable_accelerators and use_cuda:
+            # Resolve a guarded requirements snippet based on matrix
+            plan = AcceleratorManager().resolve(
+                python_version=python_version,
+                torch_version=torch_version,
+                cuda_variant=cuda_variant,
+                accelerators=accelerators,
             )
+            if plan.supported and plan.lines:
+                lines.append(
+                    "# Install accelerators (precompiled wheels) - platform guarded"
+                )
+                # Write lines to a temp requirements file and install
+                # Use printf with \n to preserve markers and flags
+                escaped = "\\n".join(
+                    line.replace("\\", "\\\\").replace('"', '\\"')
+                    for line in plan.lines
+                )
+                lines.append(f'RUN printf "{escaped}\\n" > /tmp/accelerators.txt && \\')
+                lines.append(
+                    "    pip install --no-cache-dir -r /tmp/accelerators.txt && rm -f /tmp/accelerators.txt"
+                )
+                lines.append("")
+            else:
+                # Optionally compile from source using a devel CUDA stage
+                if compile_fallback:
+                    py_minor = {
+                        None: "3.12",
+                        "3.11": "3.11",
+                        "3.12": "3.12",
+                        "3.13": "3.13",
+                    }.get(python_version, "3.12")
+                    torch_ver = torch_version or "2.8.0"
+                    # Choose FA/Sage versions conservatively
+                    fa_ver = "2.8.3" if torch_ver == "2.8.0" else "2.8.0"
+                    sage_ver = "2.2.0"
+
+                    lines_multistage: list[str] = []
+                    lines_multistage.append(
+                        "# Builder stage for compiling accelerators from source"
+                    )
+                    lines_multistage.append(
+                        f"FROM nvidia/cuda:{cuda_devel_version}-devel-ubuntu{ubuntu_version} AS builder"
+                    )
+                    lines_multistage.append("WORKDIR /build")
+                    lines_multistage.append("ENV DEBIAN_FRONTEND=noninteractive")
+                    lines_multistage.extend(
+                        [
+                            "RUN apt-get update && \\",
+                            "    apt-get install -y --no-install-recommends \\",
+                            "        software-properties-common curl ca-certificates git build-essential \\",
+                            "        cmake ninja-build pkg-config && \\",
+                            # get Python via deadsnakes for matching minor
+                            "    add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && \\",
+                            f"    apt-get install -y python{py_minor} python{py_minor}-dev python{py_minor}-venv && \\",
+                            "    curl -sS https://bootstrap.pypa.io/get-pip.py | python3 && \\",
+                            "    apt-get clean && rm -rf /var/lib/apt/lists/*",
+                        ]
+                    )
+                    lines_multistage.append("RUN python3 -m venv /opt/venv")
+                    lines_multistage.append('ENV PATH="/opt/venv/bin:$PATH"')
+                    # Torch install in builder to ensure headers/ABI present for builds
+                    variant = (cuda_variant or "cu129").replace("cu", "cu")
+                    idx = (
+                        f"https://download.pytorch.org/whl/{variant}"
+                        if (variant and variant != "cpu")
+                        else "https://download.pytorch.org/whl/cpu"
+                    )
+                    torch_pkgs = [
+                        f"torch=={torch_ver}",
+                        f"torchvision=={_infer_vision_version(torch_ver)}",
+                        f"torchaudio=={_infer_audio_version(torch_ver)}",
+                    ]
+                    lines_multistage.append(
+                        "RUN pip install --upgrade pip wheel setuptools cmake ninja && \\"
+                    )
+                    lines_multistage.append(
+                        "    pip install --no-cache-dir "
+                        + " ".join(torch_pkgs)
+                        + f" --index-url {idx}"
+                    )
+                    # Preinstall triton (wheel) to satisfy SageAttention build
+                    lines_multistage.append(
+                        "RUN pip install --no-cache-dir triton==3.4.0"
+                    )
+                    # Build wheels into /wheels
+                    lines_multistage.append("RUN mkdir -p /wheels")
+                    lines_multistage.append(
+                        f"RUN pip wheel --no-deps --no-binary :all: flash-attn=={fa_ver} -w /wheels || true"
+                    )
+                    lines_multistage.append(
+                        f"RUN pip wheel --no-deps --no-binary :all: sageattention=={sage_ver} -w /wheels || true"
+                    )
+
+                    # Runtime stage continues current base image
+                    lines_multistage.append("")
+                    lines_multistage.append("# Runtime stage")
+                    lines_multistage.append(f"FROM {base_image} AS runtime")
+                    lines_multistage.append("WORKDIR /app")
+                    # Copy wheels
+                    lines_multistage.append("COPY --from=builder /wheels /wheels")
+
+                    # Replace the initial FROM with our multi-stage prelude
+                    # Prepend now-built multi-stage lines and restart lines list for runtime steps
+                    prelude = "\n".join(lines_multistage) + "\n\n"
+                    # Begin runtime lines freshly
+                    runtime_lines: list[str] = []
+
+                    # Install PyTorch in runtime
+                    runtime_lines.append("# Install PyTorch (runtime)")
+                    torch_pkgs_rt = torch_pkgs  # reuse
+                    idx_rt = idx
+                    runtime_lines.append(
+                        "RUN pip install --no-cache-dir "
+                        + " ".join(torch_pkgs_rt)
+                        + f" --index-url {idx_rt}"
+                    )
+                    runtime_lines.append("")
+
+                    # Install compiled wheels, if present
+                    runtime_lines.append(
+                        "# Install compiled accelerator wheels if available"
+                    )
+                    runtime_lines.append(
+                        "RUN if [ -d /wheels ] && ls -1 /wheels/*.whl >/dev/null 2>&1; then \\"
+                    )
+                    runtime_lines.append(
+                        "    pip install --no-cache-dir --no-index --find-links=/wheels flash-attn sageattention || true; \\"
+                    )
+                    runtime_lines.append("    fi")
+                    runtime_lines.append("")
+
+                    # Attach prelude and reset lines
+                    lines = [prelude] + runtime_lines
+                else:
+                    # Fallback to regular torch install if matrix unsupported
+                    lines.append(
+                        "# Matrix unsupported; installing PyTorch from official index"
+                    )
+                    torch_pkgs = []
+                    if torch_version:
+                        torch_pkgs = [
+                            f"torch=={torch_version}",
+                            f"torchvision=={_infer_vision_version(torch_version)}",
+                            f"torchaudio=={_infer_audio_version(torch_version)}",
+                        ]
+                    else:
+                        torch_pkgs = ["torch", "torchvision", "torchaudio"]
+                    variant = cuda_variant or "cu121"
+                    idx = f"https://download.pytorch.org/whl/{variant}"
+                    lines.append(
+                        "RUN pip install --no-cache-dir "
+                        + " ".join(torch_pkgs)
+                        + f" --index-url {idx}"
+                    )
+                    lines.append("")
         else:
-            idx = "https://download.pytorch.org/whl/cpu"
+            # CPU mode or accelerators disabled
+            lines.append("# Install PyTorch (CPU or accelerators disabled)")
+            torch_pkgs = []
+            if torch_version:
+                torch_pkgs = [
+                    f"torch=={torch_version}",
+                    f"torchvision=={_infer_vision_version(torch_version)}",
+                    f"torchaudio=={_infer_audio_version(torch_version)}",
+                ]
+            else:
+                torch_pkgs = ["torch", "torchvision", "torchaudio"]
+            idx = (
+                "https://download.pytorch.org/whl/cpu"
+                if not use_cuda
+                else f"https://download.pytorch.org/whl/{cuda_variant or 'cu121'}"
+            )
             lines.append(
                 "RUN pip install --no-cache-dir "
                 + " ".join(torch_pkgs)
                 + f" --index-url {idx}"
             )
-        lines.append("")
+            lines.append("")
 
         # Install ComfyUI requirements
         lines.append("# Install ComfyUI requirements")

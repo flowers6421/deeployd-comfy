@@ -355,14 +355,20 @@ def _run_docker_build(
 
     # Generate Dockerfile: include resolved custom nodes and model downloads
     try:
+        # Enable accelerators for GPU builds by default (lite set)
+        enable_acc = str(runtime_mode).lower() == "gpu"
+        accel_set = ["xformers", "triton", "flash", "sage"] if enable_acc else []
         dockerfile_content = builder.build_for_workflow(
             dependencies=deps,
             custom_nodes=resolved_nodes if resolved_nodes else None,
             base_image=base_image,
-            use_cuda=(str(runtime_mode).lower() == "gpu"),
+            use_cuda=enable_acc,
             torch_version=torch_version,
             cuda_variant=cuda_variant,
             python_version=python_version,
+            enable_accelerators=enable_acc,
+            accelerators=accel_set,
+            compile_fallback=True,
             enable_nunchaku=install_nunchaku,
             nunchaku_version=nunchaku_version,
             nunchaku_wheel_url=nunchaku_wheel_url,

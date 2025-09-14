@@ -116,7 +116,27 @@ class ComfyUIJsonResolver:
                 cwd=str(self.node_bridge_path.parent),
             )
 
-            return t.cast(dict[str, Any], json.loads(result.stdout))
+            stdout = (result.stdout or "").strip()
+            if not stdout:
+                # Some environments may print everything to stderr; try that
+                stderr = (result.stderr or "").strip()
+                if stderr:
+                    try:
+                        return t.cast(dict[str, Any], json.loads(stderr))
+                    except Exception:
+                        pass
+                raise RuntimeError("Resolver returned no output")
+
+            try:
+                return t.cast(dict[str, Any], json.loads(stdout))
+            except json.JSONDecodeError:
+                # Attempt to extract JSON object from noisy stdout
+                start = stdout.find("{")
+                end = stdout.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    snippet = stdout[start : end + 1]
+                    return t.cast(dict[str, Any], json.loads(snippet))
+                raise
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Node.js bridge error: {e.stderr}")
@@ -175,7 +195,29 @@ class ComfyUIJsonResolver:
                 cwd=str(self.node_bridge_path.parent),
             )
 
-            data = json.loads(result.stdout)
+            stdout = (result.stdout or "").strip()
+            if not stdout:
+                stderr = (result.stderr or "").strip()
+                if stderr:
+                    try:
+                        data = json.loads(stderr)
+                    except Exception as e2:  # noqa: F841
+                        raise RuntimeError(
+                            "Resolver returned no output for node classes"
+                        ) from e2
+                else:
+                    raise RuntimeError("Resolver returned no output for node classes")
+            else:
+                try:
+                    data = json.loads(stdout)
+                except json.JSONDecodeError:
+                    start = stdout.find("{")
+                    end = stdout.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        snippet = stdout[start : end + 1]
+                        data = json.loads(snippet)
+                    else:
+                        raise
 
             if data.get("success"):
                 # Update cache and results
