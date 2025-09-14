@@ -261,43 +261,64 @@ async function resolveCustomNodes(nodeClasses, options = {}) {
         for (const nodeClass of nodeClasses) {
             let found = false;
 
-            // Check extension map
-            for (const [url, [nodeClasses, metadata]] of Object.entries(extensionMap)) {
-                if (nodeClasses.includes(nodeClass)) {
+            // Check extension map (be robust to unexpected shapes)
+            for (const [url, entry] of Object.entries(extensionMap || {})) {
+                let list = [];
+                let metadata = {};
+                try {
+                    if (Array.isArray(entry)) {
+                        list = Array.isArray(entry[0]) ? entry[0] : [];
+                        metadata = (entry[1] && typeof entry[1] === 'object') ? entry[1] : {};
+                    } else if (entry && typeof entry === 'object') {
+                        // Fallback shapes
+                        const maybeList = entry.nodes || entry.node_classes || entry[0] || [];
+                        list = Array.isArray(maybeList) ? maybeList : [];
+                        metadata = entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : entry;
+                    }
+                } catch (_) {
+                    list = [];
+                    metadata = {};
+                }
+
+                if (Array.isArray(list) && list.includes(nodeClass)) {
                     resolved[nodeClass] = {
                         url: url,
-                        name: metadata.title_aux || metadata.title,
-                        title: metadata.title
+                        name: metadata.title_aux || metadata.title || nodeClass,
+                        title: metadata.title || nodeClass
                     };
 
                     // Find additional info from custom node list
-                    const nodeInfo = customNodeList.custom_nodes.find(n =>
-                        n.reference === url || n.files.includes(url)
-                    );
-
-                    if (nodeInfo) {
-                        resolved[nodeClass].pip = nodeInfo.pip || [];
-                        resolved[nodeClass].install_type = nodeInfo.install_type || 'git-clone';
-                    }
+                    try {
+                        const nodeInfo = (customNodeList && Array.isArray(customNodeList.custom_nodes))
+                            ? customNodeList.custom_nodes.find(n => n.reference === url || (n.files && Array.isArray(n.files) && n.files.includes(url)))
+                            : null;
+                        if (nodeInfo) {
+                            resolved[nodeClass].pip = nodeInfo.pip || [];
+                            resolved[nodeClass].install_type = nodeInfo.install_type || 'git-clone';
+                        }
+                    } catch (_) {}
 
                     found = true;
                     break;
                 }
 
                 // Check pattern matching
-                if (metadata.nodename_pattern) {
-                    const pattern = new RegExp(metadata.nodename_pattern);
-                    if (pattern.test(nodeClass)) {
-                        resolved[nodeClass] = {
-                            url: url,
-                            name: metadata.title_aux || metadata.title,
-                            title: metadata.title,
-                            matched_by_pattern: true
-                        };
-                        found = true;
-                        break;
+                try {
+                    const patternSrc = metadata && metadata.nodename_pattern;
+                    if (patternSrc) {
+                        const pattern = new RegExp(patternSrc);
+                        if (pattern.test(nodeClass)) {
+                            resolved[nodeClass] = {
+                                url: url,
+                                name: metadata.title_aux || metadata.title || nodeClass,
+                                title: metadata.title || nodeClass,
+                                matched_by_pattern: true
+                            };
+                            found = true;
+                            break;
+                        }
                     }
-                }
+                } catch (_) {}
             }
 
             if (!found) {
@@ -361,8 +382,13 @@ if (require.main === module) {
                 process.exit(1);
         }
 
-        // Output JSON result
-        console.log(JSON.stringify(result, null, 2));
+        // Output JSON result via stdout directly to avoid any console overrides
+        try {
+            process.stdout.write(JSON.stringify(result) + "\n");
+        } catch (_) {
+            // Fallback
+            console.log(JSON.stringify(result));
+        }
     })();
 }
 
