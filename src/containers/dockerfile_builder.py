@@ -584,6 +584,11 @@ class DockerfileBuilder:
 
         # Install ComfyUI requirements (if present in build context)
         lines.append("# Install ComfyUI requirements (optional)")
+        # Normalize SciPy for Python >= 3.12 to avoid old pins like scipy~=1.10.1
+        lines.append("RUN if [ -f requirements.txt ]; then \\")
+        lines.append(
+            "    python - <<'PY' || true\nimport sys, re, io\nimport os\nif sys.version_info[:2] >= (3,12):\n p='requirements.txt'\n s=open(p,'r',encoding='utf-8').read()\n s=re.sub(r'(?m)^(\\s*scipy\\s*)(?:[<>=!~]=?[^#\\s]+)?', r'\\1>=1.11.0', s)\n open(p,'w',encoding='utf-8').write(s)\nPY\n; fi"
+        )
         lines.append(
             "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi"
         )
@@ -643,7 +648,15 @@ class DockerfileBuilder:
                         f"RUN cd {safe_name} && git checkout {node.commit_hash}"
                     )
 
-                # Check for requirements.txt and install dependencies
+                # Normalize SciPy for Python >= 3.12 in node requirements, then install
+                lines.append(
+                    "RUN if [ -f " + f"{safe_name}/requirements.txt" + " ]; then \\"
+                )
+                lines.append(
+                    "    python - <<'PY' || true\nimport sys, re, io\nimport os\nif sys.version_info[:2] >= (3,12):\n p='"
+                    + f"{safe_name}/requirements.txt"
+                    + "'\n s=open(p,'r',encoding='utf-8').read()\n s=re.sub(r'(?m)^(\\s*scipy\\s*)(?:[<>=!~]=?[^#\\s]+)?', r'\\1>=1.11.0', s)\n open(p,'w',encoding='utf-8').write(s)\nPY\n; fi"
+                )
                 lines.append(
                     f"RUN if [ -f {safe_name}/requirements.txt ]; then pip install --no-cache-dir -r {safe_name}/requirements.txt; fi"
                 )
