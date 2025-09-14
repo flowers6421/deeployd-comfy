@@ -174,7 +174,7 @@ export async function computeCustomNodesMap({
       }
 
       const custom_node_details = custom_nodes.custom_nodes.find((x) =>
-        x.files.includes(classTypeData[0])
+        x.files && x.files.includes(classTypeData[0])
       );
       if (custom_node_details && custom_node_details.pip) {
         acc[classTypeData[0]].pip = custom_node_details.pip;
@@ -255,7 +255,7 @@ export async function computeCustomNodesMapJson({
         missingNodes.add(classType);
         const urls = classTypeMatches.map(([url, _]) => ({ url }));
         conflictNodeMap[classType] = custom_nodes.custom_nodes.filter((x) => {
-          return urls.some((item: any) => x.files.includes(item.url));
+          return urls.some((item: any) => x.files && x.files.includes(item.url));
         })
         conflictNodeMap[classType] = conflictNodeMap[classType].map((node: any) => {
           return {
@@ -323,7 +323,7 @@ export async function computeCustomNodesMapJson({
       }
 
       const custom_node_details = custom_nodes.custom_nodes.find((x) =>
-        x.files.includes(classTypeData[0])
+        x.files && x.files.includes(classTypeData[0])
       );
       if (custom_node_details && custom_node_details.pip) {
         acc[classTypeData[0]].pip = custom_node_details.pip;
