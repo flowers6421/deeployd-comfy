@@ -62,6 +62,12 @@ class BuildCreateRequest(BaseModel):  # type: ignore[no-any-unimported]
     manual_repos: dict[str, str] | None = None  # name -> repo override
     manual_nodes: list[ManualNode] | None = None  # extra nodes to include
     model_assets: list[dict[str, Any]] | None = None  # {type, filename, url}
+    # Accelerator options (optional)
+    safe_mode: bool | None = None  # when True, disables accelerators even on GPU
+    accelerators: list[str] | None = None  # e.g., ["xformers","triton","flash","sage"]
+    compile_fallback: bool | None = (
+        None  # allow compile fallback for unsupported combos
+    )
 
 
 @router.post("/builds")
@@ -96,6 +102,9 @@ async def create_build(
             request.manual_repos or {},
             request.manual_nodes or [],
             request.model_assets or [],
+            request.safe_mode,
+            request.accelerators,
+            request.compile_fallback,
         ),
         daemon=True,
     )
@@ -206,6 +215,9 @@ def _run_docker_build(
     manual_repos: dict[str, str] | None = None,
     manual_nodes: list[ManualNode] | None = None,
     model_assets: list[dict[str, Any]] | None = None,
+    safe_mode: bool | None = None,
+    accelerators: list[str] | None = None,
+    compile_fallback: bool | None = None,
 ) -> None:
     """Run a real Docker build and stream logs to DB and WS."""
     local_db = init_db()
@@ -355,9 +367,14 @@ def _run_docker_build(
 
     # Generate Dockerfile: include resolved custom nodes and model downloads
     try:
-        # Enable accelerators for GPU builds by default (lite set)
-        enable_acc = str(runtime_mode).lower() == "gpu"
-        accel_set = ["xformers", "triton", "flash", "sage"] if enable_acc else []
+        # Enable accelerators when GPU and not explicitly in safe mode
+        enable_acc = (str(runtime_mode).lower() == "gpu") and not bool(safe_mode)
+        # Use requested accelerator list or default lite set
+        accel_set = (
+            accelerators
+            if (enable_acc and accelerators)
+            else (["xformers", "triton", "flash", "sage"] if enable_acc else [])
+        )
         dockerfile_content = builder.build_for_workflow(
             dependencies=deps,
             custom_nodes=resolved_nodes if resolved_nodes else None,
@@ -368,7 +385,9 @@ def _run_docker_build(
             python_version=python_version,
             enable_accelerators=enable_acc,
             accelerators=accel_set,
-            compile_fallback=True,
+            compile_fallback=bool(compile_fallback)
+            if compile_fallback is not None
+            else True,
             enable_nunchaku=install_nunchaku,
             nunchaku_version=nunchaku_version,
             nunchaku_wheel_url=nunchaku_wheel_url,

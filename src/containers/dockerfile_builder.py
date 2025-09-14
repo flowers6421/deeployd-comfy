@@ -459,7 +459,8 @@ class DockerfileBuilder:
                             "    apt-get clean && rm -rf /var/lib/apt/lists/*",
                         ]
                     )
-                    lines_multistage.append("RUN python3 -m venv /opt/venv")
+                    # Create a venv with the specific Python minor to ensure ensurepip is present
+                    lines_multistage.append(f"RUN python{py_minor} -m venv /opt/venv")
                     lines_multistage.append('ENV PATH="/opt/venv/bin:$PATH"')
                     # Torch install in builder to ensure headers/ABI present for builds
                     variant = (cuda_variant or "cu129").replace("cu", "cu")
