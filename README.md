@@ -306,7 +306,6 @@ comfyui-json resolution failed: Failed to resolve workflow: comfyui-json not ava
 Special thanks to the following projects and contributors:
 
 - **[comfyui-json](https://github.com/comfy-deploy/comfyui-json)** by ComfyDeploy team - and [BennyKok](https://github.com/BennyKok) - The core library for ComfyUI workflow parsing and dependency resolution
-- **[ComfyDeploy](https://github.com/BennyKok/comfydeploy)** - For the workflow deployment infrastructure and inspiration
 - **[ComfyUI Accelerator](https://github.com/loscrossos/helper_comfyUI_accel)** by [loscrossos](https://github.com/loscrossos/) - For acceleration techniques and optimizations
 - **[ComfyUI](https://github.com/comfyanonymous/ComfyUI)** - The amazing stable diffusion GUI and backend
 - **[ComfyUI-Manager](https://github.com/ltdrdata/ComfyUI-Manager)** - For the comprehensive node and model management system
