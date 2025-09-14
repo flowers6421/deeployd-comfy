@@ -272,7 +272,7 @@ def _run_docker_build(
     dockerfile_path = tmp_dir / "Dockerfile"
 
     builder = DockerfileBuilder()
-    # Base image from requested Python version (default 3.12)
+    # Base image will be computed after resolving accelerator matrix to ensure Python aligns
     base_py = python_version if python_version in {"3.11", "3.12", "3.13"} else "3.12"
     base_image = f"python:{base_py}-slim"
     # Resolve custom nodes via comfyui-json (authoritative), including injected extensions
@@ -396,6 +396,10 @@ def _run_docker_build(
                         eff_python = "3.12"
             except Exception:
                 pass
+        # Recompute base image using possibly locked Python version
+        base_py_eff = eff_python if eff_python in {"3.11", "3.12", "3.13"} else base_py
+        base_image = f"python:{base_py_eff}-slim"
+
         dockerfile_content = builder.build_for_workflow(
             dependencies=deps,
             custom_nodes=resolved_nodes if resolved_nodes else None,

@@ -412,15 +412,12 @@ class DockerfileBuilder:
                 lines.append(
                     "# Install accelerators (precompiled wheels) - platform guarded"
                 )
-                # Write lines to a temp requirements file and install
-                # Use printf with \n to preserve markers and flags
-                escaped = "\\n".join(
-                    line.replace("\\", "\\\\").replace('"', '\\"')
-                    for line in plan.lines
-                )
-                lines.append(f'RUN printf "{escaped}\\n" > /tmp/accelerators.txt && \\')
+                # Use a here-doc to create the requirements file robustly
+                lines.append("RUN cat > /tmp/accelerators.txt << 'EOF'")
+                lines.extend(plan.lines)
+                lines.append("EOF")
                 lines.append(
-                    "    pip install --no-cache-dir -r /tmp/accelerators.txt && rm -f /tmp/accelerators.txt"
+                    "RUN pip install --no-cache-dir -r /tmp/accelerators.txt && rm -f /tmp/accelerators.txt"
                 )
                 lines.append("")
             else:
