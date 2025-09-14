@@ -412,10 +412,14 @@ class DockerfileBuilder:
                 lines.append(
                     "# Install accelerators (precompiled wheels) - platform guarded"
                 )
-                # Use a here-doc to create the requirements file robustly
-                lines.append("RUN cat > /tmp/accelerators.txt << 'EOF'")
-                lines.extend(plan.lines)
-                lines.append("EOF")
+
+                # Write file using printf with safe quoting to avoid option parsing
+                def _sq(s: str) -> str:
+                    # shell single-quote escaping: ' -> '\''
+                    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+                quoted = " ".join(_sq(item) for item in plan.lines)
+                lines.append(f"RUN printf '%s\\n' {quoted} > /tmp/accelerators.txt")
                 lines.append(
                     "RUN pip install --no-cache-dir -r /tmp/accelerators.txt && rm -f /tmp/accelerators.txt"
                 )
