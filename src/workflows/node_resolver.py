@@ -37,8 +37,24 @@ class ComfyUIJsonResolver:
         # Deprecated: prefer upstream comfyui-json + Manager maps
         self._known_mappings: dict[str, dict[str, Any]] = {}
 
+        # Load comfyui.json if it exists
+        self.priority_mappings = self._load_comfyui_json()
+
         # Check if Node.js is available
         self._check_nodejs()
+
+    def _load_comfyui_json(self) -> dict[str, Any]:
+        """Load priority mappings from comfyui.json if it exists."""
+        comfyui_json_path = Path(__file__).parent.parent.parent / "comfyui.json"
+        if comfyui_json_path.exists():
+            try:
+                with open(comfyui_json_path, "r") as f:
+                    data = json.load(f)
+                    logger.info(f"Loaded node priority mappings from {comfyui_json_path}")
+                    return data.get("node_priority_mappings", {})
+            except Exception as e:
+                logger.warning(f"Failed to load comfyui.json: {e}")
+        return {}
 
     def _check_nodejs(self) -> None:
         """Check if Node.js is available."""
@@ -397,6 +413,41 @@ class ComfyUIJsonResolver:
                     result["custom_nodes"][url] = meta
         except Exception:
             pass
+
+        # Apply priority mappings to resolve missing nodes
+        if self.priority_mappings and result.get("missing_nodes"):
+            resolved_from_mappings = {}
+            still_missing = []
+
+            for node_name in result["missing_nodes"]:
+                if node_name in self.priority_mappings:
+                    mapping = self.priority_mappings[node_name]
+                    repo_url = mapping.get("repository")
+                    if repo_url and repo_url not in result["custom_nodes"]:
+                        # Add this repository to custom_nodes
+                        resolved_from_mappings[repo_url] = {
+                            "url": repo_url,
+                            "name": mapping.get("name", repo_url.split("/")[-1]),
+                            "hash": None,
+                            "pip": [],
+                            "files": [],
+                            "install_type": "git-clone",
+                            "priority": mapping.get("priority", 1)
+                        }
+                    elif repo_url in result["custom_nodes"]:
+                        # Already in custom_nodes, just ensure it's not in missing
+                        pass
+                    else:
+                        still_missing.append(node_name)
+                else:
+                    still_missing.append(node_name)
+
+            # Update result with resolved nodes
+            result["custom_nodes"].update(resolved_from_mappings)
+            result["missing_nodes"] = still_missing
+
+            if resolved_from_mappings:
+                logger.info(f"Resolved {len(resolved_from_mappings)} repositories from priority mappings")
 
         return result
 

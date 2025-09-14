@@ -343,6 +343,22 @@ class DockerfileBuilder:
         Returns:
             Complete Dockerfile
         """
+        # Auto-detect Python version based on base image if not specified
+        if python_version is None:
+            if "nvidia/cuda" in base_image or "cuda:" in base_image:
+                # CUDA images use apt-installed Python which is 3.10 on Ubuntu 22.04
+                python_version = "3.10"
+            elif "python:" in base_image:
+                # Extract version from python:X.Y-slim format
+                import re
+                match = re.search(r'python:(\d+\.\d+)', base_image)
+                if match:
+                    python_version = match.group(1)
+                else:
+                    python_version = "3.12"  # default
+            else:
+                python_version = "3.10"  # default for other images
+
         lines = []
 
         # Base image
@@ -355,13 +371,47 @@ class DockerfileBuilder:
 
         # Install Python and create symlinks for CUDA images
         if use_cuda:
-            lines.append("# Install Python and create symlinks")
-            lines.append("RUN apt-get update && \\")
-            lines.append("    apt-get install -y python3 python3-pip && \\")
-            lines.append("    ln -sf /usr/bin/python3 /usr/bin/python && \\")
-            lines.append("    ln -sf /usr/bin/pip3 /usr/bin/pip && \\")
-            lines.append("    apt-get clean && \\")
-            lines.append("    rm -rf /var/lib/apt/lists/*")
+            lines.append(f"# Install Python {python_version} and create symlinks")
+            if python_version == "3.10":
+                # Ubuntu 22.04 has Python 3.10 by default
+                lines.append("RUN apt-get update && \\")
+                lines.append("    apt-get install -y python3 python3-pip && \\")
+                lines.append("    ln -sf /usr/bin/python3 /usr/bin/python && \\")
+                lines.append("    ln -sf /usr/bin/pip3 /usr/bin/pip && \\")
+                lines.append("    apt-get clean && \\")
+                lines.append("    rm -rf /var/lib/apt/lists/*")
+            else:
+                # For other versions, use deadsnakes PPA
+                lines.append("RUN apt-get update && \\")
+                lines.append(
+                    "    apt-get install -y software-properties-common && \\"
+                )
+                lines.append("    add-apt-repository -y ppa:deadsnakes/ppa && \\")
+                lines.append("    apt-get update && \\")
+                lines.append(
+                    f"    apt-get install -y python{python_version} "
+                    f"python{python_version}-dev python{python_version}-venv && \\"
+                )
+                lines.append(
+                    "    apt-get install -y curl && \\"
+                )
+                lines.append(
+                    f"    curl -sS https://bootstrap.pypa.io/get-pip.py | python{python_version} && \\"
+                )
+                lines.append(
+                    f"    ln -sf /usr/bin/python{python_version} /usr/bin/python && \\"
+                )
+                lines.append(
+                    f"    ln -sf /usr/bin/python{python_version} /usr/bin/python3 && \\"
+                )
+                lines.append(
+                    f"    ln -sf /usr/local/bin/pip{python_version} /usr/bin/pip && \\"
+                )
+                lines.append(
+                    f"    ln -sf /usr/local/bin/pip{python_version} /usr/bin/pip3 && \\"
+                )
+                lines.append("    apt-get clean && \\")
+                lines.append("    rm -rf /var/lib/apt/lists/*")
             lines.append("")
 
         # System dependencies
@@ -401,7 +451,28 @@ class DockerfileBuilder:
         from src.containers.accelerator_manager import AcceleratorManager
 
         if enable_accelerators and use_cuda:
-            # Resolve a guarded requirements snippet based on matrix
+            # Install PyTorch first (required for custom nodes that need torch during build)
+            lines.append("# Install PyTorch first (required for some custom nodes during build)")
+            torch_ver = torch_version or "2.8.0"
+            cuda_var = cuda_variant or "cu129"
+            index_url = f"https://download.pytorch.org/whl/{cuda_var}"
+
+            # For PyTorch 2.8.0, just use package names without version pinning
+            if torch_ver == "2.8.0":
+                torch_pkgs = ["torch", "torchvision", "torchaudio"]
+            else:
+                torch_pkgs = [
+                    f"torch=={torch_ver}",
+                    f"torchvision=={_infer_vision_version(torch_ver)}",
+                    f"torchaudio=={_infer_audio_version(torch_ver)}",
+                ]
+
+            lines.append(
+                f"RUN pip install --no-cache-dir {' '.join(torch_pkgs)} --index-url {index_url}"
+            )
+            lines.append("")
+
+            # Resolve a guarded requirements snippet based on matrix for other accelerators
             plan = AcceleratorManager().resolve(
                 python_version=python_version,
                 torch_version=torch_version,
@@ -587,11 +658,15 @@ class DockerfileBuilder:
         # Normalize SciPy for Python >= 3.12 to avoid old pins like scipy~=1.10.1
         lines.append("RUN if [ -f requirements.txt ]; then \\")
         lines.append(
-            "    python - <<'PY' || true\nimport sys, re, io\nimport os\nif sys.version_info[:2] >= (3,12):\n p='requirements.txt'\n s=open(p,'r',encoding='utf-8').read()\n s=re.sub(r'(?m)^(\\s*scipy\\s*)(?:[<>=!~]=?[^#\\s]+)?', r'\\1>=1.11.0', s)\n open(p,'w',encoding='utf-8').write(s)\nPY\n; fi"
+            "    python -c \"import sys, re; "
+            "p='requirements.txt'; "
+            "c=open(p,'r').read() if sys.version_info[:2]>=(3,12) else None; "
+            "open(p,'w').write(re.sub(r'scipy[^#\\\\s]*', 'scipy>=1.11.0', c)) if c else None\" || true; \\"
         )
         lines.append(
-            "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi"
+            "    pip install --no-cache-dir -r requirements.txt; \\"
         )
+        lines.append("fi")
         lines.append("")
 
         # Optional: install Nunchaku wheel and ComfyUI node
@@ -648,17 +723,25 @@ class DockerfileBuilder:
                         f"RUN cd {safe_name} && git checkout {node.commit_hash}"
                     )
 
-                # Normalize SciPy for Python >= 3.12 in node requirements, then install
+                # Normalize SciPy and filter problematic packages in node requirements, then install
                 lines.append(
-                    "RUN if [ -f " + f"{safe_name}/requirements.txt" + " ]; then \\"
+                    f"RUN if [ -f {safe_name}/requirements.txt ]; then \\"
                 )
                 lines.append(
-                    "    python - <<'PY' || true\nimport sys, re, io\nimport os\nif sys.version_info[:2] >= (3,12):\n p='"
-                    + f"{safe_name}/requirements.txt"
-                    + "'\n s=open(p,'r',encoding='utf-8').read()\n s=re.sub(r'(?m)^(\\s*scipy\\s*)(?:[<>=!~]=?[^#\\s]+)?', r'\\1>=1.11.0', s)\n open(p,'w',encoding='utf-8').write(s)\nPY\n; fi"
+                    f"    python -c \"import sys, re; "
+                    f"p='{safe_name}/requirements.txt'; "
+                    f"c=open(p,'r').read(); "
+                    f"c=re.sub(r'scipy[^#\\\\s]*', 'scipy>=1.11.0', c) if sys.version_info[:2]>=(3,12) else c; "
+                    f"c=re.sub(r'^flash_attn.*$', '', c, flags=re.MULTILINE); "
+                    f"c=re.sub(r'^dfloat11.*$', '', c, flags=re.MULTILINE); "
+                    f"open(p,'w').write(c)\" || true; \\"
                 )
                 lines.append(
-                    f"RUN if [ -f {safe_name}/requirements.txt ]; then pip install --no-cache-dir -r {safe_name}/requirements.txt; fi"
+                    f"    pip install --no-cache-dir --no-build-isolation -r {safe_name}/requirements.txt 2>/dev/null || "
+                    f"pip install --no-cache-dir -r {safe_name}/requirements.txt; \\"
+                )
+                lines.append(
+                    "fi"
                 )
 
                 # Collect Python dependencies
@@ -895,6 +978,7 @@ class DockerfileBuilder:
 def _infer_vision_version(torch_version: str) -> str:
     # conservative mapping based on common releases
     mapping = {
+        "2.8.0": "0.23.0",
         "2.7.1": "0.22.1",
         "2.7.0": "0.22.0",
         "2.6.0": "0.21.0",
@@ -918,6 +1002,7 @@ def _infer_vision_version(torch_version: str) -> str:
 
 def _infer_audio_version(torch_version: str) -> str:
     mapping = {
+        "2.8.0": "2.8.0",
         "2.7.1": "2.7.1",
         "2.7.0": "2.7.0",
         "2.6.0": "2.6.0",

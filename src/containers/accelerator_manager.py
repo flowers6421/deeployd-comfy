@@ -49,7 +49,7 @@ class AcceleratorManager:
     """
 
     SUPPORTED_TORCH = {"2.8.0", "2.7.1"}
-    SUPPORTED_PY = {"3.12", "3.13"}
+    SUPPORTED_PY = {"3.10", "3.11", "3.12", "3.13"}
     DEFAULT_TORCH = "2.8.0"
     DEFAULT_CUDA = "cu129"
 
@@ -85,9 +85,11 @@ class AcceleratorManager:
 
         # Compute CP tag by python version
         cp_tag = {
+            "3.10": "cp310",
+            "3.11": "cp311",
             "3.12": "cp312",
             "3.13": "cp313",
-        }.get(py_minor, "cp312")
+        }.get(py_minor, "cp310")
 
         lines: list[str] = []
 
@@ -99,13 +101,9 @@ class AcceleratorManager:
             "--extra-index-url=https://download.pytorch.org/whl/cu129 ; sys_platform  != 'darwin'"
         )
 
-        # Torch and companions
-        # Use guarded torch on non-darwin, plain torch on darwin (CPU)
-        lines.append(f"torch=={torch} ; sys_platform  != 'darwin'")
-        lines.append("torch ; sys_platform  == 'darwin'")
+        # Note: Torch and companions are installed separately before accelerators
+        # Only install additional torch-related packages here
         lines.append("torchsde")
-        lines.append("torchvision")
-        lines.append("torchaudio")
 
         # xFormers
         if "xformers" in acc_set:
@@ -123,7 +121,19 @@ class AcceleratorManager:
         # FlashAttention
         if "flash" in acc_set or "flash-attn" in acc_set or "flashattention" in acc_set:
             if torch == "2.8.0":
-                if py_minor == "3.12":
+                if py_minor == "3.10":
+                    # Python 3.10 wheels for torch 2.8.0
+                    lines.append(
+                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
+                    )
+                elif py_minor == "3.11":
+                    # Python 3.11 wheels for torch 2.8.0
+                    lines.append(
+                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
+                    )
+                elif py_minor == "3.12":
                     # Win: loscrossos, Linux: Dao-AILab
                     lines.append(
                         "https://github.com/loscrossos/lib_flashattention/releases/download/v2.8.3/flash_attn-2.8.3+cu129torch2.8.0-"
@@ -143,7 +153,7 @@ class AcceleratorManager:
                         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
                         f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
                     )
-            elif torch == "2.7.1" and py_minor == "3.12":
+            elif torch == "2.7.1" and py_minor in ["3.10", "3.11", "3.12"]:
                 # FA 2.8.0 for 2.7.1 (from loscrossos)
                 lines.append(
                     "https://github.com/loscrossos/lib_flashattention/releases/download/v2.8.0/flash_attn-2.8.0+cu129torch2.7.1-"
@@ -162,11 +172,14 @@ class AcceleratorManager:
                     "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post2/"
                     "sageattention-2.2.0+cu128torch2.8.0.post2-cp39-abi3-win_amd64.whl ; sys_platform == 'win32'  #egg:v2.2.2"
                 )
-                lines.append(
-                    "https://github.com/loscrossos/lib_sageattention/releases/download/v2.2.0/"
-                    f"sageattention-2.2.0+cu129torch280-{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg:v2.2.2"
-                )
+                # Only Python 3.12 and 3.13 have Linux wheels available
+                if py_minor in ["3.12", "3.13"]:
+                    lines.append(
+                        "https://github.com/loscrossos/lib_sageattention/releases/download/v2.2.0/"
+                        f"sageattention-2.2.0+cu129torch280-{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg:v2.2.2"
+                    )
             elif torch == "2.7.1" and py_minor == "3.12":
+                # Only Python 3.12 has wheels for torch 2.7.1
                 lines.append(
                     "https://github.com/loscrossos/lib_sageattention/releases/download/v2.2.0/"
                     f"sageattention-2.2.0+cu129torch270-{cp_tag}-{cp_tag}-win_amd64.whl ; sys_platform == 'win32'  #egg:v2.2.2"

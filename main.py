@@ -294,6 +294,9 @@ def build_workflow(
     nunchaku_models_path: str | None = typer.Option(
         None, help="Optional path for 4-bit models used by Nunchaku"
     ),
+    python_version: str = typer.Option(
+        "3.12", help="Python version to use (3.10, 3.11, 3.12, 3.13)"
+    ),
 ):
     """Build a Docker container from a ComfyUI workflow."""
     console.print(f"[bold blue]Processing workflow:[/bold blue] {workflow_path}")
@@ -579,10 +582,13 @@ def build_workflow(
                 custom_nodes=custom_node_metadata,
                 base_image="nvidia/cuda:12.8.0-runtime-ubuntu22.04"
                 if use_cuda
-                else "python:3.11-slim",
+                else f"python:{python_version}-slim",
                 use_cuda=use_cuda,
+                python_version=python_version,
                 enable_nunchaku=enable_nunchaku,
                 nunchaku_models_path=nunchaku_models_path,
+                enable_accelerators=use_cuda,  # Enable accelerators when CUDA is available
+                accelerators=["xformers", "triton", "flash", "sage"] if use_cuda else None,
             )
             dockerfile_path = output_dir / "Dockerfile"
             with open(dockerfile_path, "w") as f:

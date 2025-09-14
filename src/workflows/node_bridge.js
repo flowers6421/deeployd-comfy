@@ -149,10 +149,26 @@ function ensureGlobalFetchWithOverlay() {
     };
 }
 
+async function loadPriorityMappings() {
+    // Load comfyui.json if it exists
+    const comfyuiJsonPath = path.join(__dirname, '..', '..', 'comfyui.json');
+    if (fs.existsSync(comfyuiJsonPath)) {
+        try {
+            const content = fs.readFileSync(comfyuiJsonPath, 'utf8');
+            const data = JSON.parse(content);
+            return data.node_priority_mappings || {};
+        } catch (error) {
+            console.error('Failed to load comfyui.json:', error.message);
+        }
+    }
+    return {};
+}
+
 async function resolveWorkflow(workflowPath, options = {}) {
     try {
         ensureGlobalFetchWithOverlay();
         const lib = await loadComfyJson();
+        const priorityMappings = await loadPriorityMappings();
 
         // Silence noisy console logs from downstream libs to keep stdout JSON-clean
         const origLog = console.log; const origWarn = console.warn; const origInfo = console.info;
@@ -190,6 +206,30 @@ async function resolveWorkflow(workflowPath, options = {}) {
             missing_nodes: result.missing_nodes || [],
             conflicting_nodes: result.conflicting_nodes || {}
         };
+
+        // Handle conflicting nodes based on priority mappings
+        for (const [nodeClass, conflicts] of Object.entries(result.conflicting_nodes || {})) {
+            if (priorityMappings[nodeClass]) {
+                // We have a priority mapping for this node
+                const priorityRepo = priorityMappings[nodeClass].repository;
+                const matchingConflict = conflicts.find(c => c.url === priorityRepo);
+
+                if (matchingConflict) {
+                    // Move this to custom_nodes
+                    output.custom_nodes[priorityRepo] = {
+                        url: matchingConflict.url,
+                        name: matchingConflict.name || priorityMappings[nodeClass].name,
+                        hash: matchingConflict.hash || null,
+                        pip: matchingConflict.pip || [],
+                        files: matchingConflict.files || [],
+                        install_type: matchingConflict.install_type || 'git-clone',
+                        warning: null
+                    };
+                    // Remove from conflicting_nodes
+                    delete output.conflicting_nodes[nodeClass];
+                }
+            }
+        }
 
         // Process custom nodes
         for (const [url, nodeData] of Object.entries(result.custom_nodes || {})) {

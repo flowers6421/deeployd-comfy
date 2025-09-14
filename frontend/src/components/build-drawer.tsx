@@ -24,7 +24,7 @@ export function BuildDrawer({
   const [activeTab, setActiveTab] = useState('summary')
   const [build, setBuild] = useState<ContainerBuild | null>(null)
   const [buildId, setBuildId] = useState<string | null>(null)
-  const [pythonVersion, setPythonVersion] = useState<'3.11' | '3.12' | '3.13'>('3.12')
+  const [pythonVersion, setPythonVersion] = useState<'3.10' | '3.11' | '3.12' | '3.13'>('3.12')
   const [noCache, setNoCache] = useState(false)
   const [runtimeMode, setRuntimeMode] = useState<'cpu'|'gpu'>('cpu')
   const [safeMode, setSafeMode] = useState(false)
@@ -79,7 +79,8 @@ export function BuildDrawer({
       let tv = torchVersion
       let cu: 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cu129'|'cpu' = runtimeMode==='gpu' ? cudaVariant : 'cpu'
       if (runtimeMode==='gpu' && !safeMode) {
-        if (py !== '3.12' && py !== '3.13') py = '3.12'
+        // For GPU mode with accelerators, use Python 3.10 (CUDA base image default)
+        if (py !== '3.10' && py !== '3.11' && py !== '3.12' && py !== '3.13') py = '3.10'
         tv = '2.8.0'
         cu = 'cu129' as any
       }
@@ -268,9 +269,10 @@ export function BuildDrawer({
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <Label>Python Version</Label>
-                  <Select value={pythonVersion} onValueChange={(v) => setPythonVersion(v as '3.11'|'3.12'|'3.13')}>
+                  <Select value={pythonVersion} onValueChange={(v) => setPythonVersion(v as '3.10'|'3.11'|'3.12'|'3.13')}>
                     <SelectTrigger><SelectValue placeholder="Python" /></SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="3.10">3.10</SelectItem>
                       <SelectItem value="3.11">3.11</SelectItem>
                       <SelectItem value="3.12">3.12</SelectItem>
                       <SelectItem value="3.13">3.13</SelectItem>
@@ -301,7 +303,7 @@ export function BuildDrawer({
                   <div>
                     <Label>PyTorch</Label>
                     {runtimeMode==='gpu' && !safeMode && (
-                      <div className="mt-1"><span className="text-xs"><span className="px-2 py-0.5 rounded border">Locked to Torch 2.8.0 + cu129 due to accelerators</span></span></div>
+                      <div className="mt-1"><span className="text-xs"><span className="px-2 py-0.5 rounded border">Locked to Torch 2.8.0 + cu129 with Python {pythonVersion} for accelerators</span></span></div>
                     )}
                     <Select value={(runtimeMode==='gpu' && !safeMode) ? '2.8.0' : torchVersion} onValueChange={(v)=>setTorchVersion(v)} disabled={runtimeMode==='gpu' && !safeMode}>
                       <SelectTrigger><SelectValue placeholder="2.x" /></SelectTrigger>

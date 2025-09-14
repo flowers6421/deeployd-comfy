@@ -272,9 +272,18 @@ def _run_docker_build(
     dockerfile_path = tmp_dir / "Dockerfile"
 
     builder = DockerfileBuilder()
-    # Base image will be computed after resolving accelerator matrix to ensure Python aligns
-    base_py = python_version if python_version in {"3.11", "3.12", "3.13"} else "3.12"
-    base_image = f"python:{base_py}-slim"
+    # Choose base image based on runtime mode
+    # Validate Python version
+    valid_versions = {"3.10", "3.11", "3.12", "3.13"}
+    effective_python_version = (
+        python_version if python_version in valid_versions else "3.12"
+    )
+
+    # For GPU mode, use CUDA image; for CPU mode, use python slim
+    if str(runtime_mode).lower() == "gpu":
+        base_image = "nvidia/cuda:12.8.0-runtime-ubuntu22.04"
+    else:
+        base_image = f"python:{effective_python_version}-slim"
     # Resolve custom nodes via comfyui-json (authoritative), including injected extensions
     deps = wf.dependencies or {}
     resolved_nodes = []
@@ -376,7 +385,7 @@ def _run_docker_build(
             else (["xformers", "triton", "flash", "sage"] if enable_acc else [])
         )
         # Lock to supported matrix if accelerators are enabled
-        eff_python = python_version
+        eff_python = effective_python_version
         eff_torch = torch_version
         eff_cuda = cuda_variant
         if enable_acc:
@@ -384,7 +393,7 @@ def _run_docker_build(
                 from src.containers.accelerator_manager import AcceleratorManager
 
                 plan = AcceleratorManager().resolve(
-                    python_version=python_version,
+                    python_version=effective_python_version,
                     torch_version=torch_version,
                     cuda_variant=cuda_variant,
                     accelerators=accel_set,
@@ -392,19 +401,16 @@ def _run_docker_build(
                 if not plan.supported:
                     eff_torch = "2.8.0"
                     eff_cuda = "cu129"
-                    if str(python_version) not in {"3.12", "3.13"}:
-                        eff_python = "3.12"
+                    # Don't force Python version - trust auto-detection
             except Exception:
                 pass
-        # Recompute base image using possibly locked Python version
-        base_py_eff = eff_python if eff_python in {"3.11", "3.12", "3.13"} else base_py
-        base_image = f"python:{base_py_eff}-slim"
+        # Note: base_image already set above based on runtime_mode
 
         dockerfile_content = builder.build_for_workflow(
             dependencies=deps,
             custom_nodes=resolved_nodes if resolved_nodes else None,
             base_image=base_image,
-            use_cuda=enable_acc,
+            use_cuda=(str(runtime_mode).lower() == "gpu"),
             torch_version=eff_torch,
             cuda_variant=eff_cuda,
             python_version=eff_python,
