@@ -15,6 +15,7 @@ help: ## Show available make targets
 
 install: ## Install backend (venv) and frontend deps
 	$(MAKE) api-venv
+	$(MAKE) node-deps
 	$(MAKE) frontend-install
 
 dev-up: ## Run API + frontend together (uses scripts/dev-up.sh)
@@ -23,6 +24,9 @@ dev-up: ## Run API + frontend together (uses scripts/dev-up.sh)
 api-venv: ## Create venv and install backend dev requirements
 	$(PYTHON) -m venv $(VENVDIR)
 	. $(VENVDIR)/bin/activate && pip install -U pip && pip install -r requirements-dev.txt
+
+node-deps: ## Install root npm dependencies for node_bridge.js
+	npm install
 
 backend-run: ## Run FastAPI app with reload (uvicorn)
 	APP_MODULE?=src.api.app:app; \
