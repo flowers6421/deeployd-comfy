@@ -577,12 +577,19 @@ def build_workflow(
                     console.print("[yellow]⚠ nvidia-smi not found - using CPU[/yellow]")
 
             # Use the build_for_workflow method which handles everything
+            # Use devel image when Nunchaku is enabled (requires CUDA dev libraries)
+            if use_cuda:
+                if enable_nunchaku:
+                    base_image = "nvidia/cuda:12.8.0-devel-ubuntu22.04"
+                else:
+                    base_image = "nvidia/cuda:12.8.0-runtime-ubuntu22.04"
+            else:
+                base_image = f"python:{python_version}-slim"
+
             dockerfile_content = dockerfile_builder.build_for_workflow(
                 dependencies=dependencies,
                 custom_nodes=custom_node_metadata,
-                base_image="nvidia/cuda:12.8.0-runtime-ubuntu22.04"
-                if use_cuda
-                else f"python:{python_version}-slim",
+                base_image=base_image,
                 use_cuda=use_cuda,
                 python_version=python_version,
                 enable_nunchaku=enable_nunchaku,

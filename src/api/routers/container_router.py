@@ -281,7 +281,11 @@ def _run_docker_build(
 
     # For GPU mode, use CUDA image; for CPU mode, use python slim
     if str(runtime_mode).lower() == "gpu":
-        base_image = "nvidia/cuda:12.8.0-runtime-ubuntu22.04"
+        # Use devel image when Nunchaku is enabled (requires CUDA dev libraries)
+        if install_nunchaku:
+            base_image = "nvidia/cuda:12.8.0-devel-ubuntu22.04"
+        else:
+            base_image = "nvidia/cuda:12.8.0-runtime-ubuntu22.04"
     else:
         base_image = f"python:{effective_python_version}-slim"
     # Resolve custom nodes via comfyui-json (authoritative), including injected extensions

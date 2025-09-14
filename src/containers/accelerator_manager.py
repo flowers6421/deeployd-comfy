@@ -60,6 +60,7 @@ class AcceleratorManager:
         torch_version: str | None,
         cuda_variant: str | None,
         accelerators: list[str] | None = None,
+        enable_nunchaku: bool = False,
     ) -> AcceleratorPlan:
         """Return a plan with guarded requirement lines for the given combo."""
         py = (python_version or "3.12").split(".")
@@ -119,38 +120,44 @@ class AcceleratorManager:
             lines.append("triton==3.4.0 ; sys_platform == 'linux'")
 
         # FlashAttention
-        if "flash" in acc_set or "flash-attn" in acc_set or "flashattention" in acc_set:
+        # Skip Flash-Attention when Nunchaku is enabled to avoid ABI conflicts
+        # (Flash-Attention 2.8.2 for PyTorch 2.7 is incompatible with PyTorch 2.8)
+        if ("flash" in acc_set or "flash-attn" in acc_set or "flashattention" in acc_set) and not enable_nunchaku:
+            flash_version = "2.8.3"
+
             if torch == "2.8.0":
                 if py_minor == "3.10":
                     # Python 3.10 wheels for torch 2.8.0
                     lines.append(
-                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"https://github.com/Dao-AILab/flash-attention/releases/download/v{flash_version}/flash_attn-{flash_version}+cu12torch2.8cxx11abiTRUE-"
                         f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
                     )
                 elif py_minor == "3.11":
                     # Python 3.11 wheels for torch 2.8.0
                     lines.append(
-                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"https://github.com/Dao-AILab/flash-attention/releases/download/v{flash_version}/flash_attn-{flash_version}+cu12torch2.8cxx11abiTRUE-"
                         f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
                     )
                 elif py_minor == "3.12":
                     # Win: loscrossos, Linux: Dao-AILab
+                    win_flash = "2.8.3"
                     lines.append(
-                        "https://github.com/loscrossos/lib_flashattention/releases/download/v2.8.3/flash_attn-2.8.3+cu129torch2.8.0-"
+                        f"https://github.com/loscrossos/lib_flashattention/releases/download/v{win_flash}/flash_attn-{win_flash}+cu129torch2.8.0-"
                         f"{cp_tag}-{cp_tag}-win_amd64.whl ; sys_platform == 'win32' #egg2.8.0"
                     )
                     lines.append(
-                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"https://github.com/Dao-AILab/flash-attention/releases/download/v{flash_version}/flash_attn-{flash_version}+cu12torch2.8cxx11abiTRUE-"
                         f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
                     )
                 else:  # 3.13
-                    # Windows FA 2.8.2 for cp313 from loscrossos; Linux 2.8.3
+                    # Windows FA 2.8.2 for cp313 from loscrossos; Linux uses configured version
                     lines.append(
                         "https://github.com/loscrossos/lib_flashattention/releases/download/v2.8.2/flash_attn-2.8.2+cu129torch2.8.0-"
                         f"{cp_tag}-{cp_tag}-win_amd64.whl ; sys_platform == 'win32' #egg2.8.0"
                     )
+                    linux_flash = "2.8.3"
                     lines.append(
-                        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-"
+                        f"https://github.com/Dao-AILab/flash-attention/releases/download/v{linux_flash}/flash_attn-{linux_flash}+cu12torch2.8cxx11abiTRUE-"
                         f"{cp_tag}-{cp_tag}-linux_x86_64.whl ; sys_platform == 'linux' #egg2.8.0"
                     )
             elif torch == "2.7.1" and py_minor in ["3.10", "3.11", "3.12"]:

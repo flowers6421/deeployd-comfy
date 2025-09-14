@@ -1,6 +1,9 @@
 """Dockerfile builder for ComfyUI containers."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class DockerfileBuilder:
@@ -478,6 +481,7 @@ class DockerfileBuilder:
                 torch_version=torch_version,
                 cuda_variant=cuda_variant,
                 accelerators=accelerators,
+                enable_nunchaku=enable_nunchaku,
             )
             if plan.supported and plan.lines:
                 lines.append(
@@ -669,27 +673,35 @@ class DockerfileBuilder:
         lines.append("fi")
         lines.append("")
 
-        # Optional: install Nunchaku wheel and ComfyUI node
+        # Optional: install Nunchaku wheel BEFORE custom nodes
         if enable_nunchaku:
-            lines.append("# Install Nunchaku (optional)")
+            lines.append("# Install Nunchaku acceleration library")
             py_cp = {
+                "3.10": "cp310",
                 "3.11": "cp311",
                 "3.12": "cp312",
                 "3.13": "cp313",
             }.get(str(python_version or "3.12"), "cp312")
+
+            # Parse torch version
             tv = (torch_version or "2.7.1").split(".")
             torch_minor = f"{tv[0]}.{tv[1]}" if len(tv) >= 2 else "2.7"
+
+            # Handle PyTorch 2.8+ compatibility
+            if torch_minor >= "2.8":
+                logger.warning(f"PyTorch {torch_minor} detected. Nunchaku wheels only support up to 2.7. Using 2.7 wheel which may have limited compatibility.")
+                torch_minor = "2.7"  # Use latest available wheel
+
+            # Use v1.0.0 as default (latest stable)
+            nunchaku_ver = (nunchaku_version or "v1.0.0").lstrip("v")
             wheel = nunchaku_wheel_url or (
                 f"https://github.com/nunchaku-tech/nunchaku/releases/download/"
-                f"{nunchaku_version or 'v0.3.1'}/"
-                f"nunchaku-{(nunchaku_version or '0.3.1').lstrip('v')}+torch{torch_minor}-{py_cp}-{py_cp}-linux_x86_64.whl"
+                f"v{nunchaku_ver}/"
+                f"nunchaku-{nunchaku_ver}+torch{torch_minor}-{py_cp}-{py_cp}-linux_x86_64.whl"
             )
-            lines.append(f"RUN pip install --no-cache-dir {wheel}")
-            lines.append("WORKDIR /app/ComfyUI/custom_nodes")
-            lines.append(
-                "RUN git clone https://github.com/mit-han-lab/ComfyUI-nunchaku nunchaku_nodes || true"
-            )
-            lines.append("WORKDIR /app/ComfyUI")
+
+            lines.append(f"# Installing Nunchaku wheel for Python {python_version}, PyTorch {torch_minor}")
+            lines.append(f"RUN pip install --no-cache-dir {wheel} || echo 'Warning: Nunchaku wheel installation failed, continuing without it'")
             lines.append("")
 
         # Install custom nodes
@@ -775,16 +787,9 @@ class DockerfileBuilder:
             lines.extend(self.add_custom_nodes(custom_nodes))
             lines.append("")
 
-        # Optional Nunchaku integration
-        if enable_nunchaku:
-            lines.append("# Nunchaku acceleration (optional)")
-            lines.append("WORKDIR /app/ComfyUI/custom_nodes")
-            lines.append(
-                "RUN git clone https://github.com/nunchaku-tech/ComfyUI-nunchaku.git"
-            )
-            if nunchaku_models_path:
-                lines.append(f"ENV NUNCHAKU_MODELS_PATH={nunchaku_models_path}")
-            lines.append("WORKDIR /app/ComfyUI")
+        # Nunchaku models path environment variable (if specified)
+        if enable_nunchaku and nunchaku_models_path:
+            lines.append(f"ENV NUNCHAKU_MODELS_PATH={nunchaku_models_path}")
             lines.append("")
 
         # Extra provisioning commands (e.g., model downloads)
