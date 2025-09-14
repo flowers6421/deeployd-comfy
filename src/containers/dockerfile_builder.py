@@ -581,9 +581,11 @@ class DockerfileBuilder:
             )
             lines.append("")
 
-        # Install ComfyUI requirements
-        lines.append("# Install ComfyUI requirements")
-        lines.append("RUN pip install --no-cache-dir -r requirements.txt")
+        # Install ComfyUI requirements (if present in build context)
+        lines.append("# Install ComfyUI requirements (optional)")
+        lines.append(
+            "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi"
+        )
         lines.append("")
 
         # Optional: install Nunchaku wheel and ComfyUI node

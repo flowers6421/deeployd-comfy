@@ -29,7 +29,7 @@ export function BuildDrawer({
   const [runtimeMode, setRuntimeMode] = useState<'cpu'|'gpu'>('cpu')
   const [safeMode, setSafeMode] = useState(false)
   const [torchVersion, setTorchVersion] = useState<string>('2.7.1')
-  const [cudaVariant, setCudaVariant] = useState<'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cpu'>('cpu')
+  const [cudaVariant, setCudaVariant] = useState<'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cu129'|'cpu'>('cpu')
   const [accelerators, setAccelerators] = useState<('xformers'|'triton'|'flash'|'sage'|'mamba')[]>(['xformers','triton','flash','sage'])
   const [compileFallback, setCompileFallback] = useState(true)
   const [installNunchaku, setInstallNunchaku] = useState(false)
@@ -74,12 +74,21 @@ export function BuildDrawer({
 
   const startBuild = async () => {
     try {
+      // Normalize versions when accelerators are enabled
+      let py = pythonVersion
+      let tv = torchVersion
+      let cu: 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cu129'|'cpu' = runtimeMode==='gpu' ? cudaVariant : 'cpu'
+      if (runtimeMode==='gpu' && !safeMode) {
+        if (py !== '3.12' && py !== '3.13') py = '3.12'
+        tv = '2.8.0'
+        cu = 'cu129' as any
+      }
       const b = await apiClient.builds.create(workflow.id, {
-        python_version: pythonVersion,
+        python_version: py,
         no_cache: noCache,
         runtime_mode: runtimeMode,
-        torch_version: torchVersion,
-        cuda_variant: runtimeMode==='gpu' ? cudaVariant : 'cpu',
+        torch_version: tv,
+        cuda_variant: cu,
         safe_mode: safeMode,
         accelerators: runtimeMode==='gpu' && !safeMode ? accelerators : undefined,
         compile_fallback: compileFallback,
@@ -291,10 +300,13 @@ export function BuildDrawer({
                 <div className="col-span-3 grid grid-cols-3 gap-3">
                   <div>
                     <Label>PyTorch</Label>
-                    <Select value={torchVersion} onValueChange={(v)=>setTorchVersion(v)}>
+                    {runtimeMode==='gpu' && !safeMode && (
+                      <div className="mt-1"><span className="text-xs"><span className="px-2 py-0.5 rounded border">Locked to Torch 2.8.0 + cu129 due to accelerators</span></span></div>
+                    )}
+                    <Select value={(runtimeMode==='gpu' && !safeMode) ? '2.8.0' : torchVersion} onValueChange={(v)=>setTorchVersion(v)} disabled={runtimeMode==='gpu' && !safeMode}>
                       <SelectTrigger><SelectValue placeholder="2.x" /></SelectTrigger>
                       <SelectContent>
-                        {['2.7.1','2.7.0','2.6.0','2.5.1','2.5.0','2.4.1','2.4.0','2.3.1','2.3.0','2.2.2','2.2.1','2.2.0','2.1.2','2.1.1','2.1.0','2.0.1','2.0.0'].map(v=> (
+                        {['2.8.0','2.7.1','2.7.0','2.6.0','2.5.1','2.5.0','2.4.1','2.4.0','2.3.1','2.3.0','2.2.2','2.2.1','2.2.0','2.1.2','2.1.1','2.1.0','2.0.1','2.0.0'].map(v=> (
                           <SelectItem key={v} value={v}>{v}</SelectItem>
                         ))}
                       </SelectContent>
@@ -303,10 +315,10 @@ export function BuildDrawer({
                   {runtimeMode==='gpu' && (
                     <div>
                       <Label>CUDA</Label>
-                      <Select value={cudaVariant} onValueChange={(v)=>setCudaVariant(v as 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cpu')}>
+                      <Select value={(runtimeMode==='gpu' && !safeMode) ? 'cu129' : cudaVariant} onValueChange={(v)=>setCudaVariant(v as 'cu118'|'cu121'|'cu124'|'cu126'|'cu128'|'cu129'|'cpu')} disabled={runtimeMode==='gpu' && !safeMode}>
                         <SelectTrigger><SelectValue placeholder="cu12x" /></SelectTrigger>
                         <SelectContent>
-                          {['cu118','cu121','cu124','cu126','cu128'].map(v=> (
+                          {['cu118','cu121','cu124','cu126','cu128','cu129'].map(v=> (
                             <SelectItem key={v} value={v}>{v}</SelectItem>
                           ))}
                         </SelectContent>

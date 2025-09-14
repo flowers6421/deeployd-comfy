@@ -375,14 +375,35 @@ def _run_docker_build(
             if (enable_acc and accelerators)
             else (["xformers", "triton", "flash", "sage"] if enable_acc else [])
         )
+        # Lock to supported matrix if accelerators are enabled
+        eff_python = python_version
+        eff_torch = torch_version
+        eff_cuda = cuda_variant
+        if enable_acc:
+            try:
+                from src.containers.accelerator_manager import AcceleratorManager
+
+                plan = AcceleratorManager().resolve(
+                    python_version=python_version,
+                    torch_version=torch_version,
+                    cuda_variant=cuda_variant,
+                    accelerators=accel_set,
+                )
+                if not plan.supported:
+                    eff_torch = "2.8.0"
+                    eff_cuda = "cu129"
+                    if str(python_version) not in {"3.12", "3.13"}:
+                        eff_python = "3.12"
+            except Exception:
+                pass
         dockerfile_content = builder.build_for_workflow(
             dependencies=deps,
             custom_nodes=resolved_nodes if resolved_nodes else None,
             base_image=base_image,
             use_cuda=enable_acc,
-            torch_version=torch_version,
-            cuda_variant=cuda_variant,
-            python_version=python_version,
+            torch_version=eff_torch,
+            cuda_variant=eff_cuda,
+            python_version=eff_python,
             enable_accelerators=enable_acc,
             accelerators=accel_set,
             compile_fallback=bool(compile_fallback)
