@@ -74,7 +74,7 @@ export function WorkflowDetail({ workflow, open, onClose }: WorkflowDetailProps)
 
           <TabsContent value="definition">
             <ScrollArea className="h-[400px] w-full rounded-md border p-4">
-              <pre className="text-xs">
+              <pre className="text-xs whitespace-pre-wrap">
                 {JSON.stringify(workflow.definition, null, 2)}
               </pre>
             </ScrollArea>
