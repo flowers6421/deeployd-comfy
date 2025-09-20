@@ -5,7 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import DateTime, String, func
-from sqlmodel import JSON, Column, Field, SQLModel
+from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
 
 def generate_uuid() -> str:
@@ -57,6 +57,18 @@ class Workflow(WorkflowBase, table=True):
         ),
         description="Last update timestamp",
     )
+    versions: list["WorkflowVersion"] = Relationship(
+        back_populates="workflow", sa_relationship_kwargs={"cascade": "all, delete"}
+    )
+    container_builds: list["ContainerBuild"] = Relationship(
+        back_populates="workflow", sa_relationship_kwargs={"cascade": "all, delete"}
+    )
+    api_endpoints: list["APIEndpoint"] = Relationship(
+        back_populates="workflow", sa_relationship_kwargs={"cascade": "all, delete"}
+    )
+    executions: list["WorkflowExecution"] = Relationship(
+        back_populates="workflow", sa_relationship_kwargs={"cascade": "all, delete"}
+    )
 
 
 class WorkflowVersion(SQLModel, table=True):
@@ -86,6 +98,7 @@ class WorkflowVersion(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
         description="Version creation time",
     )
+    workflow: "Workflow" = Relationship(back_populates="versions")
 
 
 class ContainerBuild(SQLModel, table=True):
@@ -129,6 +142,10 @@ class ContainerBuild(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True)),
         description="Build completion time",
     )
+    logs: list["BuildLog"] = Relationship(
+        back_populates="build", sa_relationship_kwargs={"cascade": "all, delete"}
+    )
+    workflow: "Workflow" = Relationship(back_populates="container_builds")
 
 
 class CustomNode(SQLModel, table=True):
@@ -209,6 +226,7 @@ class APIEndpoint(SQLModel, table=True):
         ),
         description="Last update time",
     )
+    workflow: "Workflow" = Relationship(back_populates="api_endpoints")
 
 
 class WorkflowExecution(SQLModel, table=True):
@@ -250,6 +268,7 @@ class WorkflowExecution(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True)),
         description="Execution completion time",
     )
+    workflow: "Workflow" = Relationship(back_populates="executions")
 
 
 class BuildLog(SQLModel, table=True):
@@ -266,3 +285,4 @@ class BuildLog(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
         description="Log timestamp",
     )
+    build: "ContainerBuild" = Relationship(back_populates="logs")

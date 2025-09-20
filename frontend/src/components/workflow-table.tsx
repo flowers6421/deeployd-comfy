@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Workflow } from '@/types/models';
 import {
   Table,
@@ -32,6 +33,7 @@ interface WorkflowTableProps {
 }
 
 export function WorkflowTable({ workflows }: WorkflowTableProps) {
+  const queryClient = useQueryClient();
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [activeBuildId, setActiveBuildId] = useState<string | null>(null);
   const [showBuildOpts, setShowBuildOpts] = useState<Workflow | null>(null);
@@ -72,7 +74,7 @@ export function WorkflowTable({ workflows }: WorkflowTableProps) {
     try {
       await apiClient.workflows.delete(workflow.id);
       toast.success('Workflow deleted successfully');
-      // You'd want to refresh the list here
+      await queryClient.invalidateQueries({ queryKey: ['workflows'] });
     } catch {
       toast.error('Failed to delete workflow');
     }
